@@ -32,4 +32,14 @@
 全部阶段完成，产物落盘，测试全绿（96 项），证据索引 0 缺失。
 目录重构后从新位置整体重跑：数据→训练→评测→闭环→Cartographer→消融，指标可复现
 （ATE 0.0275 m、best val/total 0.0694、compute 占比 99.3%）。
-恢复点：如需重跑，按 README §7 顺序执行（先读本文件与 TASK.md）。
+恢复点：如需重跑，按 README §5.4 顺序执行（先读本文件与 TASK.md）。
+
+- 2026-09-21（用户指令：详细 README + 去个人信息 + 发布到 GitHub）：
+  重写 `README.md`（含全部 39 张产物图与逐图说明、快速开始、证据链、限制清单）；
+  去个人信息化：`configs/paths.yaml` 改 `project_root: auto`（代码位置推导）+ `${HOME}`/环境变量覆盖，
+  `scripts/*.sh`、`Makefile`、文档与产物页脚不再写本机绝对路径，
+  `scripts/43` 的配置注释改用环境内相对路径 + sha256，`scripts/91/92` 不再输出本机路径；
+  重新生成 `configs/cartographer/g1_2d.lua`、`outputs/slam/*`（指标数值不变）、`outputs/figures/{viz_data.json,index.html}`；
+  验证：`pytest -q tests/` 96 passed，配置解析出的路径与本机实际路径一致（行为未变）。
+  发布：公开快照提交 `86e578b`（父提交为远程 `Initial commit`，fast-forward，无强推），
+  本地 `main` 已对齐远程；原始本地历史保留在 `backup/local-history-pre-publish`（49365f5）。

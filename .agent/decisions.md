@@ -31,3 +31,18 @@
 12. **可视化分两层**：可复现的静态图为 `outputs/figures/*.png`（由脚本生成）；
     面向"在对话窗口里看结果"的内联看板为 `outputs/figures/results-dashboard.html`
     （数据由 `scripts/91_export_viz_data.py` 从真实产物导出后内联，禁止手工填数）。
+13. **公开快照的发布方式（用户指令：去个人信息 + 推到 GitHub）**：
+    仓库内不得出现本机绝对路径与个人邮箱，因此发布提交**不含**原始开发历史（原始 3 个提交含
+    `/home/<user>/…` 路径与个人邮箱）——做法是：
+    * 本地保留备份分支 `backup/local-history-pre-publish`；
+    * 以远程 `Initial commit` 为父提交创建**单个干净提交**（含 sanitize 后的完整快照 + 保留 MIT LICENSE），
+      `git push` 为 fast-forward，**不使用强推**；
+    * 提交作者用 GitHub noreply 身份（`<id>+<login>@users.noreply.github.com`），不写个人邮箱；
+    * 本地 `main` 指到该干净提交，保证"本地 == 远程"，避免后续 push 出现分叉。
+14. **可移植化路径的两条规则**：`configs/paths.yaml` 的 `project_root` 用哨兵值 `auto`
+    （由 `src/utils/config.py` 的代码位置推导，仍禁止被环境变量/CLI 覆盖）；
+    外部依赖路径用 `${HOME}/…`，占位符解析顺序为"配置内键 → 同名环境变量"。
+    这样克隆到任意目录、任意用户名下都能直接跑，同时保持"外部路径可覆盖"的原设计。
+15. **产物不得内嵌个人路径**：图页脚、JSON 指标、生成的 Lua 注释、HTML 看板一律用
+    相对项目根的路径或占位符（`_portable()` / 相对 `cartographer_prefix`），
+    避免"删了仓库里的路径、却把路径画进 PNG"这种漏网。

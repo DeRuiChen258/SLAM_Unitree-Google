@@ -16,3 +16,12 @@
   9. Umeyama 对齐方向与航向偏移必须一起处理，否则 ATE/航向误差都会离谱。
 - **环境事实**：本机 `sudo` 需交互密码（无 NOPASSWD）→ 需系统包的任务要预判 BLOCKED；
   conda base 在 `$HOME/Workspace/miniconda`；ROS2 rootless 在 unitree_workspace/ros2/ros2-linux。
+- **开源前去个人信息化清单**（本次实操，按此顺序扫）：
+  1. 文本：`git ls-files | xargs grep -n "/home/<user>\|邮箱\|账号"`（含 `.agent/`、`Prompt/` 与文档）；
+  2. 配置：`project_root` 用 `auto` 哨兵 + 外部路径用 `${HOME}`/环境变量，避免写死本机路径；
+  3. **图片**：图页脚是重灾区（PNG 里的绝对路径 grep 不到）→ 要改生成代码后**重新出图**；
+  4. 生成物：JSON 指标、生成的 Lua 注释、HTML 看板都要改成相对路径，否则下次 `make` 又写回去；
+  5. 历史：旧提交里的路径/邮箱删不掉 → 用一个干净提交覆盖发布分支（父提交指向远程已有提交，
+     fast-forward 推送，不强推），旧历史留在本地备份分支；
+  6. 身份：`git -c user.name=… -c user.email=<id>+<login>@users.noreply.github.com commit`，
+     不把个人邮箱写进公开历史。
