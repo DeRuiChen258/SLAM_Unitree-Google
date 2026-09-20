@@ -1,0 +1,5 @@
+# configs/ablation/ensemble_exp_d0p5.yaml —— A6：指数衰减 decay=0.5（= base 设置）
+infer:
+  temporal_ensemble:
+    mode: exponential
+    decay: 0.5

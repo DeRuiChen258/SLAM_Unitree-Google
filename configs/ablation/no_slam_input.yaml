@@ -1,0 +1,7 @@
+# configs/ablation/no_slam_input.yaml —— A4：去掉 Cartographer 位姿输入
+# 回答的问题：位姿输入对稳定性/精度的影响？
+# 机制：状态向量里包含 [dx, dy, sin(yaw), cos(yaw)]（相对 episode 起点，由 SLAM 提供）。
+#       去掉后策略只能依赖图像方位（有限视场、无尺度线索），d_s 从 29 降到 24。
+data:
+  slam_input:
+    enabled: false

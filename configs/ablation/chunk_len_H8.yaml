@@ -1,0 +1,7 @@
+# configs/ablation/chunk_len_H8.yaml —— A5：chunk 长度扫描 H=8（= base 设置，保留作为对照锚点）
+data:
+  chunk:
+    H: 8
+infer:
+  chunk_exec:
+    n_exec: 4

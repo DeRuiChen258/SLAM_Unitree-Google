@@ -1,0 +1,12 @@
+# configs/ablation/no_cvae.yaml —— A1：去掉 CVAE（确定性回归动作块）
+# 回答的问题：确定性回归是否已够？多模态数据上 CVAE 是否真的更好？
+model:
+  latent:
+    enabled: false          # 关闭潜变量（decoder 只吃条件向量）
+train:
+  loss:
+    kl:
+      enabled: false        # 关闭 KL（无后验网络可训练，beta 恒为 0）
+      weight: 0.0
+      anneal:
+        end: 0.0

@@ -1,0 +1,1045 @@
+视觉操控学习（CVAE + 动作分块 + 时间集成）与 Cartographer SLAM 集成 · 详细执行提示词
+来源大纲：Prompt/提示词‘.txt
+适用环境：Linux（Ubuntu 26.04）/ Unitree G1 工作区 / RTX 5070 Laptop（sm_120）/ CUDA 13.2 /
+          conda env unitree_rt（Python 3.12）/ ROS2 Lyrical（CycloneDDS）
+强制部署根目录：<环境与工具根>
+提示词版本：v1.0    生成日期：2026-09-20
+
+用途：把本文件整段作为提示词交给执行 Agent，即可驱动一次真实、可复现、可审计的
+      「视觉观测 → CVAE 策略 → 动作分块 → 时间集成 → 动作输出 → Cartographer SLAM 反馈」
+      端到端实验，并按【五】做到"每个文件职责明确、可写、可跑、可验证"。
+
+阅读顺序：先读【一】【二】【三】，再按【四】【五】建工程，按【七】逐阶段执行，
+          每阶段过【八】验证清单；全部完成后按【十一】交付。
+
+
+=====================================================================
+【零】角色
+=====================================================================
+
+你是资深机器人学习（Robot Learning）与系统工程 Agent，同时具备：
+
+- PyTorch 模仿学习实现与调试能力（行为克隆 / CVAE / action chunking / temporal ensemble）；
+- ROS2 + Cartographer 激光 SLAM 的部署、配置与排障能力；
+- Unitree 工作区工程规范意识（conda 与 ROS2 系统 Python 隔离、DDS domain/网卡隔离、安全门禁）；
+- 实验可复现与证据审计能力（配置哈希、全局 seed、结构化日志、manifest、一键复现命令）。
+
+你的任务：在一个可执行的代码工程中，从零完成一次
+「基于视觉的操控动作训练 + 推理 + Cartographer SLAM 集成 + 消融验证」的端到端实验。
+交付可运行、可复现、可调试的工程化结果；
+禁止只给概念、框架图、伪代码，禁止留下未完成的 TODO 占位。
+
+
+=====================================================================
+【一】唯一事实来源（优先级由高到低，冲突时高者胜出并上报）
+=====================================================================
+
+1. 本机实测输出：命令回显、`ros2 topic list`、TF 查询结果、GPU/环境探测结果；
+2. 本地源码与配置：Cartographer / cartographer_ros 实际源码与官方示例 Lua 配置、
+   Unitree 工作区现有脚本（`config/unitree_env.sh`、`config/ros2_env.sh`、`docs/versions.md`）；
+3. 官方文档：Cartographer 官方文档与配置说明、ROS2 官方文档、PyTorch 官方文档、Unitree 官方文档；
+4. 论文与本提示词大纲。
+
+硬规则：
+
+- 任何 Cartographer 参数名、话题名、frame 名，必须先在官方示例配置或本地源码中确认后再写入本项目配置；
+  禁止凭记忆拼参数名，禁止把教程里的旧参数直接抄进本项目。
+- 任何"能跑通"的结论必须有真实命令回显、日志或产物支持；无法验证的项写 `BLOCKED` 或 `NOT_MEASURED`，
+  不得写 `PASS`，不得用"应该可以"替代证据。
+- 提示词与实测冲突时，以实测为准，并在 README 的「偏差与假设」章节记录冲突点与处理方式。
+
+
+=====================================================================
+【二】硬约束（先读，违反即失败）
+=====================================================================
+
+1. 无真机边界
+   当前无真机。本实验的所有执行环节只能落在：离线数据集回放、mock 位姿流、MuJoCo/仿真场景、
+   ROS2 离线 bag 回放。禁止声称完成真机实验；任何涉及真实机器人运动的步骤只输出「流程 + 安全门禁清单」，
+   不实际下发运动指令。
+
+2. 动作下发默认关闭
+   `src/infer/execution_loop.py` 默认只把动作写入日志/文件，不对外发布控制指令。
+   只有显式配置 `infer.allow_command_publish: true` 且完成安全门禁（急停可达、watchdog 生效、
+   限幅限速参数已加载、人员持停）后才允许发布；该开关与门禁结果必须写入日志与 manifest。
+
+3. 双 Python 环境隔离
+   ROS2 / Cartographer / TF 相关代码使用 ROS2 Lyrical 的系统 Python（`source config/ros2_env.sh`）；
+   训练与推理使用 conda `unitree_rt`（Python 3.12）。
+   禁止在系统 Python 里 pip 安装 torch，禁止在 conda 环境里装 rclpy。
+   两者之间的位姿数据通过 `pose stream`（UDP/JSONL 文件）传递，见【六】6.5 与【五】5.6。
+
+4. DDS 与网络约束
+   ROS2 侧默认 `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`；ROS2 DDS 与 Unitree 原生 DDS 必须隔离
+   domain 与网卡；仿真场景只用 `lo` 且使用与实机不同的 domain（如 1）。
+   任何"话题收不到"的问题，先按 domain → 网卡 → 消息类型 的顺序排查，再怀疑代码。
+
+5. 视觉与动作的端到端一致性
+   训练与推理必须共用同一份归一化统计（`data/stats/normalization.json`）与同一份图像预处理代码
+   （`src/datasets/transforms.py`）；禁止在推理侧凭经验重写归一化、resize、通道顺序或角度单位。
+
+6. CVAE 的推理纯度
+   推理阶段不得使用后验编码器（不得把真实未来动作喂进网络）。推理只能使用先验分布
+   （取均值或采样）。训练阶段的 teacher forcing 只作用于后验编码器，其边界必须在代码注释中标明。
+
+7. 训练/推理解耦
+   推理必须能从 checkpoint 冷启动（新进程加载权重后直接推理），不得依赖训练进程的内存状态。
+   checkpoint 必须自带 config hash、数据版本、归一化统计引用与 seed。
+
+8. 零虚构与可复现
+   所有指标来自真实运行；禁止手改日志、补图、编造曲线。
+   每个实验结果必须可由「config + commit + seed + 数据版本」重新生成，并写入 `docs/experiments.md`。
+
+9. 安全门禁前置
+   任何"会动关节/会移动"的验证（含仿真动作执行）在执行前必须写入 `TASK.md` 的检查点并逐条确认：
+   急停可达、场地隔离、限速限幅生效、watchdog 生效、仿真场景先行。
+
+10. 唯一部署路径
+    本实验工程必须部署到 `<环境与工具根>`。
+    源码、配置、数据入口、日志、checkpoint、评测与可视化产物都必须位于该目录内。
+    禁止在原 Prompt 目录、`a_Visual_experiment/SLAM/cvae_slam/` 或其他路径创建第二份工程。
+    现有 conda `unitree_rt`、ROS2 系统环境与外部大型数据可作为外部依赖复用，
+    但只能通过 `configs/paths.yaml` 的绝对路径或可验证软链接引用，不得改变本工程的唯一部署根目录。
+
+
+=====================================================================
+【三】环境基线与复测要求
+=====================================================================
+
+3.1 基线（执行时必须复测并写入 `logs/00_env_check.txt`，禁止直接照抄本文件）
+
+  项                 期望值 / 参考
+  OS                 Ubuntu 26.04.x LTS
+  GPU                NVIDIA RTX 5070 Laptop，capability (12,0) = sm_120
+  CUDA Toolkit       13.2（nvcc 输出为准）
+  Python（训练侧）   conda env `unitree_rt`，Python 3.12.x，torch 支持 sm_120
+  Python（ROS2 侧）  系统 Python（ROS2 Lyrical），仅用 rclpy / ros2 CLI
+  ROS2 发行版        Lyrical（`source config/ros2_env.sh` 后 `ros2 --version` 确认）
+  RMW                CycloneDDS（`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`）
+  工作区             ~/Workspace/Code/Embedded_code/unitree_workspace
+  仿真               MuJoCo（`mujoco_menagerie/unitree_g1` 可用）
+
+3.2 复测命令（先执行、后开发，结果落盘）
+
+  nvidia-smi; nvcc --version; uname -a; cat /etc/os-release | head -3
+  conda activate unitree_rt && python -c "import torch,sys;print(sys.version);print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_capability(0))"
+  source config/ros2_env.sh && ros2 --version && echo "$RMW_IMPLEMENTATION" && ros2 topic list
+  ros2 run tf2_ros tf2_echo map base_link        # 仅在 Cartographer 已启动后执行，超时即视为未接入
+  python -c "import cv2, numpy; print(cv2.__version__, numpy.__version__)"
+
+3.3 环境能力判定与降级
+
+  - torch 不可用或架构不含 sm_120 → 训练与推理标 `BLOCKED`，允许先完成 CPU 小规模流水线验证并显式标注；
+  - ROS2 不可用 → SLAM 环节降级到离线 bag / mock 位姿，标 `DEGRADED`；
+  - Cartographer 无法构建（见【十】降级链） → 允许 mock 位姿，标 `MOCK`，禁止写成"已验证 SLAM"；
+  - 无相机/无真实数据 → 使用 `src/datasets/mock_generator.py` 合成数据，标 `MOCK`。
+
+  每一项降级都必须写入 README「已知限制与假设」与 `evidence/index.md`。
+
+
+=====================================================================
+【四】工程根目录与顶层结构
+=====================================================================
+
+唯一工程与环境部署根目录（强制，不得改到其他路径）：
+
+  <环境与工具根>/
+
+执行开始时先用 `pwd` 和绝对路径校验部署位置。若目录不存在，则创建该精确目录；
+若目录已存在，先做 `git status` 与目录审计，只新增/更新本实验文件，禁止覆盖既有产物。
+除外部依赖与大型原始数据的显式引用外，任何工程文件或运行产物出现在该根目录之外，都视为部署验收失败。
+
+顶层结构：
+
+  <环境与工具根>/
+  ├── Prompt/                 # 本提示词、TASK.md、.agent/（台账与记忆）
+  ├── README.md               # 门面 + 快速开始 + 目录职责表 + 已知限制
+  ├── TASK.md                 # 进度账本（阶段/门禁/已知问题）
+  ├── Makefile                # 统一命令入口（可选，转发到 scripts/）
+  ├── environment.yaml        # conda 环境锁定（训练侧）
+  ├── requirements-lock.txt   # pip freeze（训练侧）
+  ├── .gitignore
+  ├── configs/                # 唯一超参与路径事实源
+  ├── data/                   # 数据：raw / processed / splits / stats / mock / schema
+  ├── src/                    # 源码：datasets / models / slam / train / infer / utils
+  ├── scripts/                # 编号化、幂等的命令入口
+  ├── tests/                  # 单元与契约测试（不依赖 GPU / 网络 / 真机）
+  ├── docs/                   # 设计、算法、数据格式、SLAM 集成、实验登记、排错
+  ├── evidence/               # 证据截图 + 索引（每阶段一一对应）
+  ├── logs/                   # 终端日志、JSONL 指标、检查报告
+  ├── checkpoints/            # 模型权重（last / best）+ meta.json
+  └── outputs/                # 曲线、评测表、消融结果、推理示例
+
+4.1 一级目录职责（必须逐字写入 README 的"放什么 / 不放什么"表）
+
+  data/         放：原始 episode、处理产物、划分文件、归一化统计、mock 数据、schema。
+                不放：代码、模型权重、日志、临时脚本。raw/ 只读，任何脚本禁止回写。
+  src/          放：可被 import 的库与可执行入口（datasets/models/slam/train/infer/utils）。
+                不放：数据、权重、超参值（超参一律进 configs/）。
+  configs/      放：YAML/Lua 配置与消融覆盖文件；唯一超参事实源。
+                不放：代码逻辑、路径硬编码以外的运行状态。
+  scripts/      放：命令入口与编排（幂等、可重复执行、无魔数）。
+                不放：算法实现（算法必须在 src/ 内，脚本只调用）。
+  tests/        放：单元/契约/回归测试；不放：需要真机或长训练的用例。
+  docs/         放：设计、算法笔记、数据字典、SLAM 集成说明、实验登记、排错手册。
+  evidence/     放：截图与配对日志的索引；编号与阶段一一对应。
+  logs/         放：运行日志与指标 JSONL；按阶段编号命名，禁止手工编辑。
+  checkpoints/  放：模型权重与 meta.json；禁止把同一权重复制到多处。
+  outputs/      放：图、表、评测与消融结果；可由 logs/ 与 checkpoints/ 重建。
+
+4.2 依赖方向（架构约束，违反即返工）
+
+  scripts/ ──▶ src/train、src/infer ──▶ src/models、src/datasets、src/utils
+  src/slam（ROS2 侧进程）──▶ pose stream ──▶ src/slam/pose_stream.py ──▶ src/datasets、src/infer
+
+  - `src/models/` 不得 import `src/datasets/`、`src/train/`、`src/infer/`；
+  - `src/datasets/` 不得 import `src/models/`；
+  - `src/slam/` 不得 import `src/models/`；
+  - `src/utils/` 为最底层，只能被依赖，不得反向依赖其他内部包；
+  - 违反依赖方向的 import 必须重构，不允许以"方便"为由保留。
+
+=====================================================================
+【五】逐文件职责规范（本提示词的核心，必须逐条落地）
+=====================================================================
+
+5.0 阅读与执行说明
+
+  - 标记含义：【必需】必须实现；【可选】默认可省，省略时必须在 README 偏差表写理由；
+    【条件】仅在对应降级路径或扩展场景下才需要。
+  - 每个文件条目给出：作用 / 输入 / 输出 / 关键接口 / 约束。
+    实现时把这些内容写进文件顶部 docstring 与 README 的文件表，做到"看一眼就知道它负责什么"。
+  - 任何文件不得承担两个不相关职责；确需拆分时新增文件并在 README 文件表登记。
+  - 目录树与本节文件清单必须双向一致：树里出现的文件本节要解释，本节列出的文件树里要存在。
+
+---------------------------------------------------------------------
+5.1 根级文件
+---------------------------------------------------------------------
+
+  README.md【必需】
+      作用：项目门面与最终实验报告正文。含：实验目标、环境基线、目录职责表、"放什么/不放什么"、
+            每个文件的一句话职责索引、快速开始（一键命令）、复现步骤、结果摘要（真实数据）、
+            已知限制与假设、偏差记录表。
+      约束：所有命令必须真实可执行；结果数字必须来自 logs/ 与 outputs/ 的真实产物。
+
+  TASK.md【必需】
+      作用：全过程进度账本与中断恢复入口（阶段清单、门禁勾选、Known Issues、当前检查点）。
+      约束：每完成一个阶段立即更新；中断后先读它再从检查点继续，禁止从头重跑。
+
+  .agent/state.md、.agent/decisions.md、.agent/failures.md、.agent/memory.md【必需】
+      作用：检查点、关键决策（含理由与取舍）、失败与解决、可复用经验。
+      约束：决策文件记录"为什么这样设计"，供后续消融与复盘引用。
+
+  environment.yaml、requirements-lock.txt【必需】
+      作用：训练侧 conda 环境与 pip 依赖锁定（`conda env export --no-builds` 与 `pip freeze` 的产物）。
+      约束：ROS2 侧系统依赖单独写在 `docs/cartographer_integration.md`，禁止混进 conda 锁文件。
+
+  Makefile【可选】
+      作用：统一命令入口（make env / data / train / infer / slam / ablation / evidence / report）。
+      约束：只能转发到 scripts/ 内脚本，禁止内联业务逻辑或硬编码参数。
+
+  .gitignore【必需】
+      作用：忽略 data/raw、data/processed、checkpoints/*.pt、logs/、outputs/、*.bag、*.npy 大文件、
+            __pycache__、.ipynb_checkpoints 等。
+      约束：被忽略的大型产物必须在 data/manifest.json 或 experiment manifest 中登记来源与哈希。
+
+---------------------------------------------------------------------
+5.2 configs/（唯一超参与路径事实源；代码内禁止硬编码这些值）
+---------------------------------------------------------------------
+
+  configs/paths.yaml【必需】
+      作用：所有路径与外部依赖位置：项目根、数据根、checkpoint 目录、日志目录、
+            ROS2 环境脚本路径（`config/ros2_env.sh`）、bag 目录、Cartographer 配置目录、
+            conda 环境名、Python 解释器路径。
+      约束：`project_root` 必须固定为 `<环境与工具根>`，
+            不允许被环境变量或 CLI 覆盖；只有外部数据与依赖路径允许环境变量覆盖
+            （如 `CVSLAM_DATA_ROOT`）。路径缺失时启动即报错，不允许静默创建到别处。
+
+  configs/data.yaml【必需】
+      作用：数据与切片契约。字段至少含：图像 resize/裁剪尺寸、通道顺序、颜色空间；
+            状态向量字段清单与顺序（关节位置/速度、夹爪、末端位姿、SLAM 位姿、时间特征）；
+            动作定义（维度、单位、坐标系、是否增量）、动作归一化方式；
+            观测历史帧数 K、动作块长度 H、窗口 stride、控制频率（Hz）、
+            训练/验证/测试划分比例与 seed、异常过滤阈值（静止段/时间跳变/动作越界）。
+      约束：字段顺序即张量顺序，必须与 `data/schema/dataset_schema.json` 完全一致。
+
+  configs/model.yaml【必需】
+      作用：网络结构超参：视觉主干类型与是否预训练/冻结、多帧聚合方式（last/pool/gru）、
+            视觉特征维度、状态编码维度、latent_dim（z 维度）、先验/后验/解码器层数与隐藏宽度、
+            dropout、激活函数、输出头形式（每步回归完整动作 vs 预测增量）、参数量统计开关。
+      约束：任何结构变更必须同步更新 `docs/algorithm_notes.md` 的网络结构图。
+
+  configs/train.yaml【必需】
+      作用：训练超参与策略：batch size、epochs/steps、lr、optimizer、weight decay、梯度裁剪、
+            混合精度开关、num_workers、seed、重建损失类型与权重、KL 权重 β、
+            KL 退火方案（warmup steps + linear/cosine/cyclical）、是否启用 free-bits、
+            动作平滑损失权重、时序一致性损失权重、验证周期、checkpoint 周期、
+            早停条件（连续 N 次验证无提升）。
+      约束：所有损失权重必须可在消融中独立覆盖，无需改代码。
+
+  configs/infer.yaml【必需】
+      作用：推理解码与执行策略：checkpoint 路径、latent 使用方式（mean/sample）、采样条数（多模态）、
+            每次预测后执行的步数 n_exec、是否启用时间集成及模式与参数（decay/window/min_weight）、
+            动作限幅（单步最大位移/旋转/夹爪速率）、速度上限、watchdog 超时、
+            闭环最大步数与终止条件、动作发布开关（默认 false）。
+      约束：`allow_command_publish` 默认 false；打开时必须同时满足安全门禁配置项。
+
+  configs/slam.yaml【必需】
+      作用：SLAM 桥接契约：运行模式（online/replay/mock）、位姿来源（tf / tracked_pose topic）、
+            topic 名与消息类型、frame 名（map/odom/base_link）、TF 查询超时、
+            位姿流传输方式与端口/文件路径、时间同步最大容差、丢帧率阈值与降级动作、
+            位姿进入状态向量的字段与归一化方式（以 episode 起点为原点 / sin-cos 编码角度）。
+      约束：topic 与 frame 必须以本机 `ros2 topic list` / `ros2 topic info` / TF 实测结果为准，
+            配置内以注释标注"实测日期 + 命令"。
+
+  configs/cartographer/g1_2d.lua【必需（在线/回放模式）】
+      作用：Cartographer 2D 轨迹构建与位姿图配置，基于官方示例配置逐项裁剪。
+            至少覆盖：`MAP_BUILDER.use_trajectory_builder_2d`、`TRAJECTORY_BUILDER_2D` 的
+            传感器使用项（是否用 IMU、累积点数、距离门限）、`submaps` 参数、
+            `motion_filter`、`real_time_correlative_scan_matcher`、`ceres_scan_matcher`、
+            `POSE_GRAPH.optimize_every_n_nodes` 与约束构建参数、
+            `tracking_frame` / `published_frame` / `odom_frame` / `provide_odom_frame`。
+      约束：每个参数必须带中文注释解释作用与取值范围；参数名必须在本地源码或官方示例中核对过，
+            并在文件头写明来源路径与核对日期。
+
+  configs/cartographer/g1_3d.lua【条件】
+      作用：3D 建图配置（需要 3D 点云或使用多线雷达时启用）；与 2D 配置保持同一套 frame 约定。
+      约束：3D 模式下必须显式记录点云坐标系、与 base_link 的固定外参来源。
+
+  configs/cartographer/g1_2d.rviz【可选】
+      作用：可视化配置（子图、轨迹、当前帧、TF），用于人工核查 SLAM 是否稳定。
+
+  configs/ablation/*.yaml【必需】
+      作用：消融覆盖文件，只写"相对 base 的差异"（delta），禁止复制整份配置。
+            至少包含：`no_cvae.yaml`、`no_chunk.yaml`、`no_temporal_ensemble.yaml`、
+            `no_slam_input.yaml`、`chunk_len_H4/H8/H16/H32.yaml`、
+            `ensemble_uniform.yaml` / `ensemble_exp_d0p5.yaml` / `ensemble_exp_d1p0.yaml`。
+      约束：每个消融项必须能在 `docs/experiments.md` 找到对应的运行记录与指标行。
+
+---------------------------------------------------------------------
+5.3 data/（数据契约与产物）
+---------------------------------------------------------------------
+
+  data/README.md【必需】
+      作用：数据格式的权威说明（人类可读）：目录布局、每个字段的含义/单位/坐标系、
+            时间戳语义（采集时钟 / 单调时钟）、采集条件、命名规则、版本规则。
+      约束：与 `data/schema/dataset_schema.json` 描述同一事实，不一致时以 schema 为准并修正本文件。
+
+  data/schema/dataset_schema.json【必需】
+      作用：机器可读契约：字段名、类型、形状、单位、取值范围、必需/可选。
+            被 `src/datasets/schema.py`、`scripts/12_data_check.py`、`tests/test_schema.py` 读取。
+      约束：schema 版本号变更时，必须同步更新 manifest 与 README。
+
+  data/raw/【必需】
+      作用：原始 episode（真实采集或 bag 导出），只读。
+      约束：任何脚本不得写入该目录；发现需要清洗时，产物写到 data/processed/。
+
+  data/mock/【条件（无真实数据时必需）】
+      作用：`mock_generator.py` 生成的合成数据；文件内与 manifest 中必须带 `"source": "MOCK"`。
+      约束：mock 数据训练出的所有结论在 README 中必须标注为 mock 结论。
+
+  data/processed/【必需】
+      作用：窗口化/归一化后的可训练数据（npz / memmap / parquet，任选其一并在 README 说明）。
+      约束：必须可由 raw/ + scripts/11_build_dataset.py 完全重建，禁止手工编辑。
+
+  data/splits/{train,val,test}.json【必需】
+      作用：划分文件：episode 列表、窗口索引范围、生成 seed、生成时间、schema 版本。
+      约束：训练脚本只读该文件，禁止在训练时重新随机划分。
+
+  data/stats/normalization.json【必需】
+      作用：各通道 mean/std/min/max（图像、状态、动作、SLAM 位姿），训练与推理唯一来源。
+      约束：推理加载 checkpoint 时必须校验该文件的哈希与 checkpoint 记录一致。
+
+  data/manifest.json【必需】
+      作用：数据版本事实源：来源（真实/MOCK）、episode 数、帧数、fps、字段统计、
+            生成命令、生成时间、文件哈希、schema 版本。
+
+---------------------------------------------------------------------
+5.4 src/datasets/
+---------------------------------------------------------------------
+
+  src/__init__.py【必需】
+      作用：包标记与版本号（`__version__`）；不放任何业务逻辑。
+
+  src/datasets/__init__.py【必需】
+      作用：导出稳定公共 API（如 `EpisodeDataset`、`build_windows`、`load_stats`、`apply_norm`）。
+      约束：不写业务逻辑，不做隐式副作用（不读文件、不初始化 CUDA）。
+
+  src/datasets/schema.py【必需】
+      作用：数据契约的数据结构（dataclass）与校验函数：
+            `ObservationSpec`、`StateSpec`、`ActionChunkSpec`、`EpisodeMeta`、
+            `validate_episode()`、`validate_sample()`、`assert_finite()`。
+            校验内容：字段存在性、shape、dtype、时间戳单调性与间隔一致性、
+            动作/状态取值域、图像宽高与通道、NaN/Inf。
+      接口：`validate_episode(path) -> Report`（含错误列表与统计），供脚本与测试复用。
+
+  src/datasets/episode_reader.py【必需】
+      作用：读取单条 episode：图像序列、状态序列、动作序列、SLAM 位姿序列、成功/失败标记、元数据。
+            支持懒加载（逐帧读图，避免一次性占满内存）与 memmap；解析时间戳与频率；
+            检测丢帧、乱序、重复时间戳并产生告警统计。
+
+  src/datasets/window_builder.py【必需】
+      作用：滑动窗口与动作块的唯一构造入口：输入 episode 序列，
+            输出样本 `(obs_index[K], state[t], action_chunk[t:t+H], mask, meta)`。
+            处理 episode 末尾（不足 H 步时按配置 padding 或裁剪）、窗口 stride、
+            跨 episode 边界禁止拼接。
+      约束：训练与推理（含 offline_eval）必须调用同一函数，禁止各自重写切片逻辑。
+
+  src/datasets/transforms.py【必需】
+      作用：图像预处理（resize、裁剪、归一化、通道顺序）与状态/动作归一化、反归一化；
+            提供 `build_transform(cfg)` 与 `inverse_action(norm_action, stats)`。
+      约束：训练/推理/评测三方共用；函数需为纯函数，便于单元测试。
+
+  src/datasets/filters.py【必需】
+      作用：异常样本过滤：NaN/Inf、时间戳跳变超阈值、机器人静止段、动作越界、
+            SLAM 位姿丢失段、图像全黑/过曝（可选阈值）。
+      输出：过滤统计（各类被过滤样本数与占比）写入 `logs/12_data_check.json`。
+
+  src/datasets/mock_generator.py【条件（无真实数据时必需）】
+      作用：合成数据生成器，必须产生"可学习 + 多模态"的演示：
+            （a）定义隐式策略：由图像中的可控视觉线索（标记/目标块位置）与机器人状态决定目标动作；
+            （b）对同一观测生成 ≥2 种合理动作（用于验证 CVAE 相对确定性回归的多模态优势）；
+            （c）注入可控噪声：动作噪声、观测延迟、丢帧、SLAM 位姿漂移，用于验证鲁棒性与时间同步。
+      约束：生成参数写入配置；产物带 MOCK 标记；生成后用单 batch 过拟合自检证明数据可学习。
+
+  src/datasets/episode_dataset.py【必需】
+      作用：`torch.utils.data.Dataset` 实现：读取 splits + processed 数据，
+            返回样本 dict：`images [K,C,H,W]`、`state [d_s]`、`action_chunk [H,d_a]`、
+            `mask [H]`、`meta`（episode 号、起始帧、时间戳）。
+            提供 `collate_fn` 处理多相机/变长场景；worker 内固定随机种子。
+      约束：不得在 `__getitem__` 内做需要全局统计的归一化（统计在构建数据集时固化）。
+
+---------------------------------------------------------------------
+5.5 src/models/（算法核心）
+---------------------------------------------------------------------
+
+  src/models/__init__.py【必需】
+      作用：导出 `CVAEPolicy`、`ActionChunker`、`TemporalEnsembler` 等公共类。
+
+  src/models/vision_backbone.py【必需】
+      作用：多帧视觉编码：共享权重 CNN 主干（如轻量 ResNet 变体，具体以可用权重与算力为准）+
+            多帧聚合（last / 平均池化 / GRU 之一，配置可选）+ 特征投影到统一维度。
+            支持多相机输入（按相机分组编码后拼接，或按通道堆叠，二者选一并在配置中声明）。
+      约束：输出固定维度特征 `[B, d_v]`；前向内断言输入 shape 与归一化范围；
+            冻结/微调由配置控制；不得在内部做 resize（预处理在 datasets 层）。
+
+  src/models/encoder.py【必需】
+      作用：CVAE 后验编码器 `q(z | o, s, a_chunk)`：输入视觉特征 + 状态向量 + 未来动作块，
+            经 MLP/残差块输出对角高斯参数 `mu, log_var`（各 `[B, latent_dim]`）。
+      约束：含 dropout/归一化层；输出 log_var 做 clamp（防数值爆炸）；
+            必须写清"仅在训练阶段被调用"的注释。
+
+  src/models/cvae_policy.py【必需（核心文件）】
+      作用：策略主体，显式实现并注释以下要素：
+            （1）先验网络 `p(z | o, s)`：只依赖当前观测与状态；
+            （2）后验网络 `q(z | o, s, a_chunk)`：训练期使用，编码真实未来动作块；
+            （3）重参数化采样 `z = mu + exp(0.5 * log_var) * eps`；
+            （4）解码器/策略头 `pi(a_chunk | o, s, z)`：输出未来 H 步动作块；
+            （5）损失装配：重建损失 + KL 散度（权重与退火来自 train.yaml）；
+            （6）teacher forcing 边界：训练用真值动作块进后验，推理只用先验。
+      关键接口：
+            `forward(obs, state, action_chunk=None, mode="train", sample_z=True)`
+            `predict_chunk(obs, state, mode="mean"|"sample", n_samples=1) -> [B,H,d_a]`
+            `compute_loss(batch, step) -> dict(recon, kl, reg, total)`
+      约束：推理路径不得访问 action_chunk；KL 与重建项必须分别可记录、可单独关闭（供消融）。
+
+  src/models/action_chunker.py【必需（核心文件）】
+      作用：动作块的语义与调度（不含神经网络）：
+            `ActionSpec(d_a, units, frame, is_delta)`、`build_chunk(actions, t, H)`、
+            `ChunkScheduler(H, n_exec)`（决定何时重新预测、执行多少步、何时丢弃尾部）、
+            `split_chunk_to_steps(chunk)`。
+      约束：与 `window_builder.py` 共用同一套切片语义；
+            必须支持"chunk 长度可配置"并在文档中解释 H 对平滑性/响应延迟的影响。
+
+  src/models/temporal_ensemble.py【必需（核心文件）】
+      作用：时间集成融合器：维护"最近若干次预测在时间轴上的重叠动作"，
+            按权重融合输出当前时刻动作。至少实现并可选：
+            （a）uniform-in-chunk（块内均匀权重）；
+            （b）exponential decay（`w = decay ** age`，age 按步计）；
+            （c）inverse-age（`w = 1 / (1 + age)`）；
+            （d）confidence-weighted（按预测对应 chunk 的置信/先验信号加权，可选）。
+            接口：`update(chunk, t0, n_exec, meta)`、`action_at(t)`、`reset()`、
+            `stats()`（每个 step 参与融合的预测数、权重和）。
+      约束：权重必须归一化；冷启动（仅 1 个预测）时退化为直接执行；
+            缺步与过期预测必须显式裁剪而非补零；
+            融合只作用于"未来将被执行"的步，禁止回改已执行动作。
+
+  src/models/layers.py【可选】
+      作用：共享基础块（MLP 构造器、激活、位置/时间编码、权重初始化、重参数化工具函数），
+            避免在多处重复实现同一结构。
+
+---------------------------------------------------------------------
+5.6 src/slam/（Cartographer 集成；跨解释器边界在此收口）
+---------------------------------------------------------------------
+
+  src/slam/__init__.py【必需】
+      作用：导出 `CartographerBridge`、`PoseStreamClient`、`pose_to_state`、`TrajectoryMetrics`。
+
+  src/slam/cartographer_bridge.py【必需（ROS2 侧，系统 Python 运行）】
+      作用：Cartographer → 策略的桥接节点：
+            （1）通过 `tf2` 查询 `map → odom → base_link`（frame 名以实测为准），
+                 或订阅 Cartographer 发布的轨迹节点/位姿话题；
+            （2）为每个位姿打上"采集时间戳 + 单调时钟"双时间戳，缓存最近 N 条；
+            （3）检测 TF 超时、丢帧率、跳变（相邻帧位移/角度超阈值）并计数；
+            （4）通过 pose stream（UDP JSON/二进制，或 JSONL 文件追加）对外发布；
+            （5）降级：Cartographer 不可用时切换里程计位姿，并把 `source` 标记为
+                 `odom_fallback`；彻底无数据时标记 `unavailable`，绝不发 0 位姿冒充有效数据。
+      模式：`online`（在线 ROS2）、`replay`（从 bag 回放）、`mock`（按配置生成确定性位姿流）、
+            `dry-run`（只打印不发布）。
+      约束：文件内必须写明"用系统 Python 运行"、依赖的 ROS2 包、启动命令与前置环境脚本；
+            禁止在此文件中 import torch。
+
+  src/slam/pose_stream.py【必需（conda 侧运行）】
+      作用：训练/推理侧的位姿客户端：订阅/读取 pose stream，维护滑动缓冲，
+            暴露 `get_pose(t) -> PoseSample | None`、`latest()`、`stats()`；
+            处理乱序、重复、丢失；用单调时钟建立"位姿时钟 ↔ 策略时钟"映射。
+      约束：取不到位姿时返回 None + 有效性标志，由调用方决定丢弃样本还是标记无效；
+            禁止默认返回零位姿。
+
+  src/slam/pose_utils.py【必需】
+      作用：位姿数学与特征化：四元数 ↔ 旋转矩阵、SE(3) 组合与求逆、frame 变换、
+            2D (x, y, θ) 与 6D/7D 位姿互转、差分求线/角速度、角度 sin/cos 编码、
+            以 episode 起点为原点的相对位姿计算。
+      约束：模块 docstring 必须写明坐标系约定（右手系、角度单位、base_link 与 map 的语义）；
+            所有函数附带往返一致性测试（见 tests/test_pose_utils.py）。
+
+  src/slam/trajectory_metrics.py【必需】
+      作用：SLAM 轨迹质量评估：ATE、RPE、累计漂移、与里程计的偏差统计，
+            输出 CSV + 曲线到 outputs/；为"SLAM 是否稳定"提供可量化判据。
+      约束：参考轨迹必须显式声明来源（里程计 / 仿真真值 / mock），禁止无参考时给出 ATE。
+
+  src/slam/bag_replay.py【条件（离线回放路径）】
+      作用：无实时传感器时的回放驱动：按固定频率从 bag/文件读取位姿与传感器数据，
+            模拟在线时序并检验时间同步逻辑。
+
+---------------------------------------------------------------------
+5.7 src/train/
+---------------------------------------------------------------------
+
+  src/train/__init__.py【必需】
+
+  src/train/train_cvae.py【必需（训练入口）】
+      作用：训练主循环：解析配置 → 构建 dataset/dataloader/model/loss/optimizer/scheduler →
+            逐 epoch 训练 → 计算 recon/KL/正则项 → 反向传播 → 周期验证 →
+            保存 checkpoint 与指标 → 生成 loss 曲线数据。
+            支持 `--config`、`--override key=value`、`--resume`、`--max-steps`（用于 smoke/过拟合门禁）。
+      约束：退出码语义化（0 成功；非 0 区分配置错误/数据错误/OOM/训练发散）；
+            每个 step 记录 `step, lr, beta, loss 各项, grad_norm` 到 `logs/train_metrics.jsonl`。
+
+  src/train/losses.py【必需】
+      作用：损失实现：
+            （1）重建损失（L1/Huber/MSE 可选，对动作块内各步可加权）；
+            （2）KL 散度 `KL(q||p)` 的解析式实现（对角高斯）；
+            （3）动作平滑损失（一阶/二阶差分，抑制抖动）；
+            （4）时序一致性损失（相邻 chunk 重叠部分的一致性，可选）；
+            （5）总损失装配与各项权重（来自 train.yaml）。
+      约束：每项损失独立可关（消融需要），且必须在返回 dict 中分别可见。
+
+  src/train/kl_anneal.py【可选】
+      作用：β 调度器：linear / cosine / cyclical + warmup steps，
+            供 train_cvae 与消融实验复用。
+
+  src/train/validation.py【必需】
+      作用：验证循环：在 val split 上计算重建误差、KL、动作平滑度、
+            以及"确定性解码 vs 随机采样"的一致性/多样性指标；写 `logs/val_metrics.jsonl`。
+
+  src/train/checkpoint.py【必需】
+      作用：checkpoint 保存与加载：模型权重、优化器状态、step/epoch、config hash、
+            seed、数据版本、归一化统计文件哈希、git commit（若可用）。
+            `load_for_inference(path)` 必须严格校验 config hash 与统计一致性，不一致即报错。
+
+---------------------------------------------------------------------
+5.8 src/infer/
+---------------------------------------------------------------------
+
+  src/infer/__init__.py【必需】
+
+  src/infer/rollout_policy.py【必需（推理核心）】
+      作用：滚动推理：从数据集 episode 或观测流读取观测 → 组成 (o, s) →
+            调 `predict_chunk` → 交给 chunk 调度与时间集成 → 输出被执行的动作序列。
+            支持开环（预测一次执行整段）与闭环（执行 n_exec 步后用新观测重新预测）两种模式，
+            并记录每次预测的耗时、chunk 与融合权重来源。
+      约束：推理不得访问后验；所有输出动作必须记录"来源（predict 序号 / 融合权重）"以便复盘。
+
+  src/infer/execution_loop.py【必需（在线执行；默认不下发指令）】
+      作用：在线执行循环：读观测 + 读 Cartographer 位姿 → 预测 → 时间集成 →
+            限幅/限速/单步增量上限 → watchdog 检查 → 输出动作（默认写文件与日志）。
+            含超时处理、异常回调、优雅退出、丢帧降级、掉线保护。
+      约束：`infer.allow_command_publish` 默认 false；打开时必须在启动日志中打印安全门禁检查结果；
+            任何一次 watchdog 触发都必须立即停止后续动作并记录事件。
+
+  src/infer/offline_eval.py【必需】
+      作用：离线评测：在 val/test split 上计算每步与每 chunk 的动作误差、
+            平滑度（jerk/差分方差）、多模态命中率、推理延迟分位数（p50/p95）、
+            SLAM 位姿参与前后的对比指标；输出表格到 `outputs/eval/`。
+
+  src/infer/replay.py【可选】
+      作用：动作回放与对比可视化：GT vs 单步预测 vs chunk 预测 vs 时间集成后的曲线与轨迹叠加，
+            用于人工判断抖动与滞后。
+
+---------------------------------------------------------------------
+5.9 src/utils/
+---------------------------------------------------------------------
+
+  src/utils/config.py【必需】
+      作用：配置加载：默认值 → 主配置 → 消融覆盖 → CLI override → 环境变量（优先级从低到高），
+            字段级校验（类型/范围/互斥项），计算 config hash（用于 checkpoint 与实验登记）。
+      约束：未知字段必须报错（禁止静默忽略拼错的超参）。
+
+  src/utils/logging_utils.py【必需】
+      作用：统一日志：控制台 + `logs/*.jsonl` 双写；字段含 timestamp/level/module/step/context；
+            禁止打印敏感信息；支持阶段编号前缀（与既有提示词体系一致）。
+
+  src/utils/seed.py【必需】
+      作用：全局随机种子（python/numpy/torch/cuda）与 DataLoader worker 种子；
+            可选 `torch.use_deterministic_algorithms(True)` 及其性能代价说明。
+
+  src/utils/time_sync.py【必需】
+      作用：多源时间对齐：最近邻/线性插值、时钟偏移估计、gap 检测与有效性掩码；
+            被 datasets（图像-状态-动作-位姿对齐）与 slam（位姿流）共用。
+      约束：对齐容差来自配置；超容差样本必须被标记而不是强行取最近值。
+
+  src/utils/metrics.py【必需】
+      作用：指标聚合与导出：滑动平均、分位数统计、CSV/JSONL 落盘，
+            供训练曲线、评测表、消融表统一使用（避免各处重复实现统计）。
+
+  src/utils/viz.py【必需】
+      作用：可视化：loss/beta 曲线、动作对比曲线、chunk 权重热图、时间集成轨迹、
+            图像-动作配对示例；输出到 `outputs/figures/`。
+      约束：图必须带轴标签、单位、图例与数据来源（config hash / 日志文件），便于直接进报告。
+
+  src/utils/io_utils.py【可选】
+      作用：原子写（先写临时文件再 rename）、目录创建、文件哈希、npz/json 读写封装。
+
+---------------------------------------------------------------------
+5.10 scripts/（编号化命令入口；幂等、无魔数、可重复执行）
+---------------------------------------------------------------------
+
+  scripts/00_env_check.sh【必需】
+      作用：采集环境快照：OS/GPU/CUDA/Python/conda/torch(cuda+arch)/ROS2/RMW/ROS_DOMAIN_ID/
+            Cartographer 可用性探测；输出 `logs/00_env_check.txt` 与 evidence 截图。
+  scripts/01_enter_env.sh【必需】
+      作用：统一激活：训练侧 `conda activate unitree_rt`；ROS2 侧 `source config/ros2_env.sh`；
+            导出必要环境变量（不污染全局 shell 配置）。
+  scripts/10_gen_mock_data.py【条件】
+      作用：调用 mock_generator 生成合成数据到 `data/mock/`，并打印口径统计。
+  scripts/11_build_dataset.py【必需】
+      作用：预处理与窗口化：读 raw/mock → 过滤异常 → 计算归一化统计 → 生成 processed/、
+            splits/、stats/、manifest.json；打印样本数、窗口数、字段维度。
+  scripts/12_data_check.py【必需】
+      作用：数据体检：schema 校验、形状/时间戳/取值域统计、抽样可视化；
+            输出 `logs/12_data_check.json`（含被过滤样本明细与原因分布）。
+  scripts/20_train.sh【必需】
+      作用：训练入口（参数全部来自 configs/train.yaml，可叠加消融覆盖）。
+  scripts/21_overfit_single_batch.sh【必需】
+      作用：单 batch 过拟合门禁：固定一个 batch 训练若干步，要求 loss 显著下降（阈值写进配置），
+            未通过则禁止进入正式训练。
+  scripts/30_infer_offline.sh【必需】
+      作用：离线推理与评测：加载 checkpoint，跑 val/test，产出指标表与曲线。
+  scripts/31_infer_closed_loop.sh【必需】
+      作用：闭环推理：使用 mock/回放位姿流，按 n_exec 滚动预测并做时间集成；输出执行轨迹与日志。
+  scripts/40_slam_bringup.sh【条件】
+      作用：启动 SLAM 路径（Cartographer 或降级路径）+ bridge；打印 topic/frame/频率摘要。
+  scripts/41_record_slam_bag.sh【条件】
+      作用：录制数据包（激光/IMU/里程计/相机）+ 元数据（场景、对象、时间、操作者）。
+  scripts/42_slam_replay_eval.sh【条件】
+      作用：离线回放 + 轨迹指标（ATE/RPE/漂移），产出 `outputs/slam/` 结果。
+  scripts/50_run_ablation.sh【必需】
+      作用：按消融矩阵批量运行（每个配置一个输出目录），汇总成 `outputs/ablation/summary.csv`。
+  scripts/60_collect_evidence.sh【必需】
+      作用：证据采集：截图 + 日志配对 + 生成 `evidence/index.md`（编号/阶段/命令/日志/时间戳/哈希），
+            缺失项直接报错。
+  scripts/90_report.py【必需】
+      作用：汇总 manifest/logs/outputs → 生成 README 的实验报告章节与结果表，
+            所有数字必须来自真实产物文件。
+
+---------------------------------------------------------------------
+5.11 tests/（不依赖 GPU、网络、真机；必须与 CI/本地同一入口）
+---------------------------------------------------------------------
+
+  tests/test_schema.py            数据契约校验：合法/非法样本、缺失字段、形状错误必须被拒绝。
+  tests/test_window_builder.py    窗口切片正确性：起始/末尾边界、stride、跨 episode 不拼接。
+  tests/test_action_chunker.py    chunk 构造与重预测调度：H/n_exec 语义、尾部裁剪。
+  tests/test_cvae_shapes.py       前向 shape 与数值健康：输出 [B,H,d_a]、无 NaN、log_var 被 clamp。
+  tests/test_cvae_loss.py         损失正确性：先验=后验时 KL≈0；完美预测时重建≈0；β 缩放生效。
+  tests/test_temporal_ensemble.py 集成正确性：权重归一化、冷启动退化、过期预测被丢弃、单预测=原始值。
+  tests/test_pose_utils.py        位姿往返一致性：四元数↔矩阵、SE(3) 复合/求逆、角度编码。
+  tests/test_time_sync.py         时间对齐：容差内对齐、超容差标记、gap 掩码。
+  tests/test_config_validation.py 配置校验：未知字段、越界值、互斥项必须报错退出。
+  tests/test_checkpoint_roundtrip.py 保存→加载一致性：权重、config hash、统计哈希一致；不一致时报错。
+
+---------------------------------------------------------------------
+5.12 docs/
+---------------------------------------------------------------------
+
+  docs/architecture.md           系统架构与 Mermaid 数据流图（观测 → 编码 → CVAE → chunk →
+                                 ensemble → 执行；SLAM 旁路如何进入状态向量）。
+  docs/data_format.md            数据字典与示例样本（指向 data/schema/dataset_schema.json，不重复定义）。
+  docs/algorithm_notes.md        CVAE 推导（ELBO/KL/重参数化）、KL 退火策略、动作分块取舍、
+                                 时间集成权重推导与延迟分析；逐条标注实现文件与行号。
+  docs/cartographer_integration.md Cartographer 版本与来源、构建方式、配置项含义、
+                                 topic/frame 表、时间同步机制、降级链与实测结果（含失败记录）。
+  docs/experiments.md            实验登记表：编号 / 变量 / config hash / commit / seed / 数据版本 /
+                                 指标（重建误差、平滑度、延迟、轨迹漂移）/ 结论 / 是否复现成功。
+  docs/troubleshooting.md        常见报错与排查：ROS2 话题不通、TF 超时、CUDA OOM、
+                                 时间戳不同步、NaN 发散、checkpoint 不匹配、数据形状错误。
+  docs/figures/                  图源文件（mermaid 文本 + 生成脚本），保证图可复现。
+
+---------------------------------------------------------------------
+5.13 产物目录
+---------------------------------------------------------------------
+
+  logs/            终端日志（`NN_stage_*.log`）、指标 JSONL（train/val/infer/slam）、
+                   环境快照、数据体检报告、架构与算法分析笔记。
+  checkpoints/     `last/`、`best/` 权重 + `meta.json`（config hash、seed、step、数据版本、统计哈希）。
+  outputs/         figures/（曲线与图）、eval/（指标表）、ablation/（消融汇总）、
+                   slam/（轨迹图与漂移统计）、infer_samples/（推理示例）。
+  evidence/        `index.md` 证据索引 + `NN_stage_name.png` 截图 + 配对日志路径；
+                   截图工具不可用时显式写 `SCREENSHOT_UNAVAILABLE`，不得伪造图片。
+
+---------------------------------------------------------------------
+5.14 严禁项（违反视为任务失败）
+---------------------------------------------------------------------
+
+  - 禁止在 `src/` 内硬编码超参、路径、阈值（必须来自 configs/）。
+  - 禁止训练与推理各自实现 slicing / 归一化 / 反归一化（必须复用同一函数）。
+  - 禁止在推理路径调用后验编码器或读取真实未来动作。
+  - 禁止改写 `data/raw/`；禁止手工编辑 `data/processed/`、`data/splits/`、`logs/`。
+  - 禁止把同一份权重或数据复制到多个目录（只允许引用或软链）。
+  - 禁止用零位姿/零动作静默填补缺失的 SLAM 数据或缺失观测。
+  - 禁止把 mock / fallback / BLOCKED 结果表述为真实 SLAM 或真机结果。
+  - 禁止在系统 Python 安装 torch、在 conda 环境安装 rclpy。
+
+=====================================================================
+【六】关键算法契约（实现前先读，实现后逐条自检）
+=====================================================================
+
+6.1 张量契约（字段顺序必须与 configs/data.yaml 和 schema 一致）
+
+  观测图像      images   [B, K, C, H, W]           K 帧历史，C=3，未归一化范围在 transforms 内处理
+  多相机        images   [B, N_cam, K, C, H, W]   仅当启用多视角；编码方式在 model.yaml 声明
+  状态向量      state    [B, d_s]
+                        d_s = 关节位置 + 关节速度 + 夹爪开合 + 末端位姿(或增量) +
+                              SLAM 位姿(x, y, sinθ, cosθ[, z, quat]) + 位姿有效性标志 + 时间特征
+  动作块        action   [B, H, d_a]              d_a = 平移增量(3) + 旋转增量(3，轴角或 6D) + 夹爪(1)
+                                                  若使用关节增量，维度与单位在 data.yaml 声明
+  掩码          mask     [B, H]                   末尾 padding 或无效步为 0，损失与集成都要乘掩码
+  潜变量        z        [B, latent_dim]
+
+  约定：角度单位弧度；平移单位米；所有"增量"以当前末端位姿为参考；坐标系写在 data.yaml 注释中。
+
+6.2 CVAE 契约
+
+  - 后验：q(z | o, s, a_chunk) = N(mu_post, diag(sigma_post^2))，仅训练时使用；
+  - 先验：p(z | o, s) = N(mu_prior, diag(sigma_prior^2))，训练与推理都使用；
+  - 重参数化：z = mu + sigma * eps，eps ~ N(0, I)；
+  - 重建：L_recon = 掩码加权的 L1/Huber(pred_chunk, gt_chunk)；
+  - KL：L_kl = 0.5 * sum(sigma_post^2 + mu_post^2 - 1 - log sigma_post^2)（对 batch 求均值）；
+  - 总损失：L = L_recon + beta(t) * L_kl + lambda_smooth * L_smooth + lambda_tc * L_tc(可选)；
+  - beta(t)：warmup 后由 train.yaml 指定 schedule（linear/cosine/cyclical）；
+  - 训练：teacher forcing 仅体现在"后验吃真值动作块"；
+  - 推理：z 取自先验（mean 或 sample），可多次采样以展示多模态；
+  - 数值：log_var 必须 clamp；KL 项出现 NaN/Inf 时必须中止并记录，不得用 0 值掩盖。
+
+6.3 动作分块契约
+
+  - 数据侧：滑动窗口 `(obs[t-K+1..t], state[t], action[t..t+H-1])`，stride 来自 data.yaml；
+  - 训练侧：以整个 chunk 为监督目标（不是逐步预测）；
+  - 推理侧：每 `n_exec` 步重新预测一次，`n_exec <= H`；剩余步数不足时用掩码或提前结束 episode；
+  - 一致性：`window_builder.build_chunk` 与 `action_chunker.build_chunk` 必须语义一致（同 stride、同边界规则）；
+  - 分析要求：给出 H ∈ {4, 8, 16, 32} 在"重建误差 / 动作平滑度 / 单次推理延迟 / 响应滞后"上的对照结果。
+
+6.4 时间集成契约
+
+  - 维护结构：`deque`，元素为 (chunk, t0_pred, n_exec, meta)；
+  - 当前时刻 t 的动作：取所有覆盖 t 的预测步，按权重融合：
+      uniform-in-chunk : w = 1（同一 chunk 内每步等权）
+      exponential      : w = decay^(t0_pred + i - t) 或按块龄衰减（公式在代码注释中写明）
+      inverse-age      : w = 1 / (1 + age)
+    action(t) = sum(w_j * a_j(t)) / sum(w_j)；
+  - 冷启动：只有 1 条预测时直接输出该预测，权重归一化不产生除零；
+  - 过期：t0_pred + H <= t 的预测必须被丢弃；
+  - 在线更新：每次新预测到达时更新，不得回改已执行动作；
+  - 分析要求：给出"开启/关闭时间集成"与"不同 decay"在抖动指标（动作二阶差分方差）
+    与延迟指标（从观测到执行的端到端延迟）上的对照结果，并解释取舍。
+
+6.5 Cartographer → 策略的契约（位姿如何进入状态向量）
+
+  - 数据来源：TF `map → base_link`（经 odom）或 Cartographer 轨迹话题，二选一并在 slam.yaml 声明；
+  - 输出结构：`PoseSample(t_capture, t_mono, x, y, z, roll, pitch, yaw, source, valid)`；
+  - 进入状态向量的字段（默认）：相对 episode 起点的 `(dx, dy, sin(d_yaw), cos(d_yaw))` +
+    线速度/角速度（由相邻位姿差分）+ `valid` 标志位；3D 模式下扩展 z 与四元数分量；
+  - 归一化：位置按训练集统计标准化；角度用 sin/cos（禁止直接喂原始弧度做线性归一化）；
+  - 失效处理（按顺序）：丢帧 < 容差 → 保持上一有效位姿并置 `valid=0`；
+    超过容差 → 该样本标记无效（训练时按配置丢弃或作为无效样本参与，但必须显式声明）；
+    桥接整体不可用 → `source=unavailable`，禁止用零位姿；
+  - 用途说明：位姿既作为策略输入（提供稳定全局参考），也用于轨迹一致性评估与消融对比。
+
+6.6 时序对齐契约
+
+  - 主时钟：策略时钟（单调时钟）；图像/状态/动作/位姿各自带采集时间戳；
+  - 对齐方式：最近邻（默认）或线性插值（位姿），最大容差来自配置；
+  - 输出：对齐偏移分布（均值/p95）、超容差样本数、gap 分布，写入 `logs/12_data_check.json`；
+  - 门禁：超容差比例超过阈值（默认 5%）时必须先修数据/时钟，禁止直接训练。
+
+6.7 安全与平滑契约
+
+  - 单步动作限幅：平移/旋转/夹爪各自上限，超出即裁剪并计数；
+  - 速度上限：相邻执行步的变化率上限；
+  - watchdog：观测或位姿超时未更新即停止输出动作；
+  - 兜底：任何异常（NaN、shape 不符、checkpoint 不匹配）立即停止当前 episode 并记录，
+    禁止带病继续执行。
+
+
+=====================================================================
+【七】执行阶段与门禁（按顺序推进，前一阶段门禁不过不得进入下一阶段）
+=====================================================================
+
+  S0  环境勘察与基线复测
+      动作：执行【三】3.2 的全部命令；确认 torch/CUDA/ROS2/mujoco/opencv 可用性；
+            探测 Cartographer 是否可构建或可用（只做探测，不做长时安装）。
+      产物：logs/00_env_check.txt、evidence/00_env_check.png、TASK.md 基线表。
+      门禁：CPU 流水线必须可跑；GPU/ROS2 缺失时按【三】3.3 记录降级等级。
+
+  S1  工程骨架与配置
+      动作：在 `<环境与工具根>` 建【四】目录树；
+            写 configs/ 全部配置与 schema；写 README/TASK/.gitignore；
+            建空模块与 docstring（文件职责写在文件头）。
+      产物：目录树 + 配置文件 + README 目录职责表。
+      门禁：`pwd` 与配置中的 `project_root` 均精确等于上述强制路径；
+            `src/utils/config.py` 能加载全部配置并拒绝非法配置（tests/test_config_validation.py 绿）。
+
+  S2  数据契约与 mock 数据
+      动作：定义 schema；实现 mock_generator 并生成第一批数据（含多模态与噪声）；
+            跑 schema 校验。
+      产物：data/mock/、data/schema/dataset_schema.json、logs/12_data_check.json（首版）。
+      门禁：schema 校验 0 错误；样本形状与配置一致；多模态样本（同一观测 ≥2 动作）存在。
+
+  S3  数据管线
+      动作：实现 episode_reader/window_builder/transforms/filters/episode_dataset；
+            生成 processed/、splits/、stats/、manifest.json。
+      产物：上述文件 + 数据体检报告。
+      门禁：窗口数可解析（与 episode 长度/stride 推算一致）；时间对齐超容差比例 < 5%；
+            划分文件固定 seed 且可重生成一致（同 seed 两次生成哈希相同）。
+
+  S4  模型实现
+      动作：实现 vision_backbone/encoder/cvae_policy/action_chunker/temporal_ensemble；
+            跑 shape 与损失单元测试。
+      产物：src/models/*、tests/*（模型相关）。
+      门禁：前向 shape 全部正确；KL/重建的退化自检通过；集成器单元测试通过。
+
+  S5  训练闭环
+      动作：先单 batch 过拟合（21_overfit_single_batch.sh），再小规模训练，
+            最后按配置正式训练（至少产生 last/best 两个 checkpoint）。
+      产物：checkpoints/、logs/train_metrics.jsonl、outputs/figures/loss_curve.png。
+      门禁：单 batch loss 显著下降；正式训练 loss 趋势合理（无 NaN、无发散）；
+            验证指标被记录；checkpoint 可由新进程加载。
+
+  S6  动作分块与时间集成验证
+      动作：在验证集上对比：单步预测 / chunk 预测 / chunk + 时间集成；
+            输出平滑度与延迟对照；跑 chunk 长度与 decay 的敏感性实验。
+      产物：outputs/figures/（动作对比、权重热图）、outputs/eval/ 表。
+      门禁：开启时间集成后抖动指标下降（或给出不下降的诚实解释与证据）；
+            多模态采样可视化能看出 ≥2 种动作模式（若使用 CVAE 且数据确有多模态）。
+
+  S7  推理闭环
+      动作：实现并运行 offline 与 closed-loop 推理（mock 位姿流）；
+            记录端到端延迟（观测→动作输出）、步数、异常事件。
+      产物：outputs/infer_samples/、logs/infer_*.jsonl。
+      门禁：闭环连续运行 ≥ 配置步数无中断；延迟分位数被记录；
+            推理路径代码审查确认未访问后验。
+
+  S8  Cartographer 接入
+      动作：按【十】降级链逐级尝试：探测/构建 → 启动 → `ros2 topic list` 与 TF 实测 →
+            启动 bridge → 位姿流打通 → 时间同步报告。
+      产物：docs/cartographer_integration.md、outputs/slam/（轨迹与统计）、logs/slam_*.jsonl。
+      门禁：位姿流连续可用（丢帧率低于阈值）或明确记录为 MOCK/DEGRADED；
+            时间同步偏移与超容差比例被量化。
+
+  S9  SLAM 位姿参与策略
+      动作：把位姿并入状态向量（6.5），重跑数据构建与训练；
+            与 `no_slam_input` 配置做对照。
+      产物：两份实验记录 + 对照表。
+      门禁：两项实验除位姿输入外其余配置一致（config 差异可 diff 证明）。
+
+  S10 消融实验
+      动作：按【九】矩阵批量运行（同一份 splits、同一组 seed）。
+      产物：outputs/ablation/summary.csv + docs/experiments.md 登记。
+      门禁：每个消融项都有配置、日志、指标；缺失即视为未完成。
+
+  S11 验证与复现
+      动作：在干净进程/新终端执行一键复现命令；对照【八】清单逐条核验。
+      产物：logs/reproduce_*.log、复现结论（成功/失败 + 原因）。
+      门禁：【八】全部条目有证据；无法验证项标 NOT_MEASURED/BLOCKED。
+
+  S12 报告素材与收尾
+      动作：生成网络结构图、数据流图、训练曲线、推理示例、SLAM 效果图、失败案例；
+            更新 README/TASK/.agent。
+      产物：README 报告章节 + docs/figures/ + evidence/index.md。
+      门禁：所有图有源数据与生成命令；README 与真实产物一致。
+
+
+=====================================================================
+【八】验证清单（逐条给出命令、预期输出与判据）
+=====================================================================
+
+  1) 数据形状检查
+     命令：python scripts/12_data_check.py --config configs/data.yaml
+     预期：打印 episodes/窗口数/字段形状；JSON 报告无 error 级问题。
+     判据：images [K,C,H,W] 与 state d_s、action [H,d_a] 与配置完全一致；无 NaN/Inf。
+
+  2) 前向传播 shape check
+     命令：pytest -q tests/test_cvae_shapes.py
+     预期：输出 [B,H,d_a]，mu/log_var 形状为 [B,latent_dim]。
+     判据：全部通过且无 NaN。
+
+  3) 单 batch 过拟合
+     命令：bash scripts/21_overfit_single_batch.sh --config configs/train.yaml
+     预期：loss 从初始值显著下降（阈值写在配置里）。
+     判据：达到阈值即 PASS；否则先查数据/损失/学习率，禁止继续正式训练。
+
+  4) loss 是否正常下降
+     命令：bash scripts/20_train.sh --config configs/train.yaml
+     预期：logs/train_metrics.jsonl 中 total/recon/kl 项可分项查看；
+            outputs/figures/loss_curve.png 生成。
+     判据：total 趋势下降；kl 不发散；beta 退火曲线符合配置。
+
+  5) 预测动作是否平滑
+     命令：bash scripts/30_infer_offline.sh --config configs/infer.yaml
+     预期：输出抖动指标（动作二阶差分方差）与对比曲线。
+     判据：开启时间集成后的抖动 ≤ 关闭时（若不满足，必须在报告中给出解释与证据）。
+
+  6) 推理是否能闭环运行
+     命令：bash scripts/31_infer_closed_loop.sh --config configs/infer.yaml
+     预期：连续 N 步无中断，输出执行轨迹与延迟统计。
+     判据：无异常中断；p50/p95 延迟被记录；watchdog 触发次数为 0（或说明原因）。
+
+  7) SLAM 是否输出稳定轨迹
+     命令：bash scripts/42_slam_replay_eval.sh
+     预期：outputs/slam/ 下轨迹图 + ATE/RPE 统计。
+     判据：轨迹连续无跳变（跳变计数与阈值对照）；漂移指标被量化并记录来源。
+
+  8) 模型输出与 Cartographer 位姿是否时序对齐
+     命令：python -m src.utils.time_sync --report logs/slam_align.json（或等价入口）
+     预期：输出对齐偏移分布与超容差样本比例。
+     判据：超容差比例 < 配置阈值；否则必须先修时钟/缓冲，禁止进入训练与评测。
+
+  9) 复现性
+     命令：同 config + 同 seed 重跑一次训练子集与推理。
+     预期：指标在配置声明的误差带内一致。
+     判据：结果一致或差异有解释（非确定性算子、线程数等），并写入 docs/experiments.md。
+
+  10) 工程一致性
+     命令：pytest -q；python -m compileall src
+     预期：测试全绿；无 import 错误。
+     判据：依赖方向未违反；无硬编码超参；配置驱动全流程。
+
+  常见报错与排查方向：
+    话题收不到        → domain / 网卡 / RMW / 消息类型（先最小收发验证）
+    TF 超时          → frame 名拼写、Cartographer 是否发布、时间戳时钟域
+    时间戳不单调      → 采集端时钟与单调时钟混用；统一到策略时钟
+    CUDA OOM         → batch size / 图像分辨率 / 多帧数量 / AMP
+    loss NaN         → log_var 未 clamp、学习率过大、输入含 NaN
+    checkpoint 不匹配 → config hash 或归一化统计哈希不一致（禁止强行加载）
+
+
+=====================================================================
+【九】消融实验矩阵（同一 splits、同一组 seed ≥3，逐项登记）
+=====================================================================
+
+  编号  变量                 配置覆盖                    要回答的问题
+  A1    去掉 CVAE            configs/ablation/no_cvae.yaml         确定性回归是否已够？多模态是否受益？
+        （latent 关闭、无 KL、直接回归动作块）
+  A2    去掉动作分块         configs/ablation/no_chunk.yaml        H=1 时平滑性与成功率如何变化？
+  A3    去掉时间集成         configs/ablation/no_temporal_ensemble.yaml 抖动与延迟的净收益是多少？
+  A4    去掉 Cartographer 输入 configs/ablation/no_slam_input.yaml 位姿输入对稳定性/漂移的影响？
+  A5    chunk 长度扫描        chunk_len_H4/H8/H16/H32.yaml          性能-延迟-平滑度的最优区间在哪？
+  A6    集成权重扫描          ensemble_uniform / exp_d0p5 / exp_d1p0  权重策略对抖动与滞后的影响？
+  A7    观测历史帧数 K 扫描【可选】K1/K2/K4                      多帧视觉是否必要？（【六】6.1 说明多帧处理）
+
+  要求：
+    - 每次运行保存：配置、config hash、commit、seed、数据版本、日志、指标、图；
+    - 汇总表列：重建误差 / 平滑度 / 推理延迟(p50,p95) / 轨迹漂移 / 采样多样性；
+    - 结论必须写成"在什么条件下成立"，禁止只给单一数字排名；
+    - 若某消融项因算力/时间未完成，标 `NOT_RUN` 并写原因，禁止编造数字。
+
+
+=====================================================================
+【十】降级链与异常处理（禁止静默失败）
+=====================================================================
+
+  1) Cartographer 不可用（ROS2 Lyrical 下无法构建或缺少依赖包）
+     降级顺序：a. 官方 ROS2 分支源码构建（记录编译日志与依赖版本）；
+               b. 容器/独立环境内运行 ROS1 版 Cartographer + ros1_bridge（记录版本与桥接话题）；
+               c. 使用已录制的 bag 离线回放，离线跑 Cartographer 并导出位姿轨迹；
+               d. 以上皆不可行 → `mock` 位姿流（标 MOCK）。
+     每一级都必须记录：尝试命令、报错、耗时、结论；最终采用的级别写入 README 与 manifest。
+
+  2) ROS2 不可用 → 训练/推理仍必须可跑（离线数据集 + mock 位姿），SLAM 相关项标 DEGRADED。
+
+  3) 无 GPU / torch 不含 sm_120 → 允许 CPU 小规模跑通全流水线并标 BLOCKED（GPU 项），
+     报告必须区分"流水线可运行"与"GPU 训练已验证"。
+
+  4) 无真实数据 → mock 数据可用，但所有结论必须标 MOCK，并说明合成规则与真实场景的差异。
+
+  5) 运行期异常
+     - NaN/Inf：立即停止当前 episode，打印触发位置与输入统计；
+     - 观测超时/watchdog：停止动作输出并记录事件；
+     - 位姿丢失超限：该样本标无效，不参与训练与评测；
+     - 权重/配置不匹配：拒绝加载并给出期望与实际 hash；
+     - OOM：按配置阶梯降低 batch/分辨率并重试，重试次数与结果入日志。
+
+
+=====================================================================
+【十一】交付物与报告素材
+=====================================================================
+
+  代码与配置：src/（全模块）、scripts/（编号脚本）、configs/（含消融）、tests/、Makefile（可选）。
+  数据：data/schema/、processed/ 与 splits/ 的构建记录、manifest.json、stats/。
+  训练：checkpoints/last、checkpoints/best（含 meta.json）、loss 曲线数据与图。
+  推理：offline 指标表、closed-loop 轨迹与延迟统计、示例可视化。
+  SLAM：docs/cartographer_integration.md、轨迹图、ATE/RPE 表、时间同步报告、降级链记录。
+  消融：outputs/ablation/summary.csv、docs/experiments.md 登记表。
+  报告素材（必须齐备，供后续写实验报告直接引用）：
+    实验目的 / 算法原理（CVAE + chunk + ensemble）/ 网络结构图 / 数据流图 /
+    训练曲线（total/recon/kl/beta）/ 推理示例（图像-动作-轨迹）/ SLAM 效果图 /
+    时序对齐图 / 失败案例与原因分析 / 消融对照表 / 复现命令清单。
+  说明文档：README.md（含目录职责表、快速开始、已知限制与假设、偏差记录）。
+
+
+=====================================================================
+【十二】执行纪律与禁止项
+=====================================================================
+
+  1. 按 S0→S12 顺序执行，前一阶段门禁未过不得推进；被中断后先读 TASK.md 与 .agent/state.md 从检查点继续。
+  2. 每个阶段结束必须落盘产物（文件/日志/图），不允许只存在于终端输出中。
+  3. 写代码前先读现有文件；不要凭猜测假设数据结构或既有实现。
+  4. 不安装与任务无关的依赖；不修改系统级配置；不污染既有 conda 环境与 ROS2 环境。
+  5. 禁止留下 TODO / pass 占位；若必须留待后续，写入 TASK.md 的 Known Issues 并在 README 声明。
+  6. 任何"更快/更平滑/更稳"的结论，必须有 Baseline 与 Candidate 的同一条件对照数据。
+  7. 禁止伪造证据、补图、手改日志；证据缺失即标 `MISSING`。
+  8. 涉及真实机器人或运动下发的内容，一律停在"流程 + 安全清单"，不实际执行。
+
+
+=====================================================================
+【十三】关键提示（容易踩的坑）
+=====================================================================
+
+  - CVAE 的价值在于"同一观测对应多种合理动作"。若数据本身近似单模态，CVAE 收益会很小；
+    必须在 mock 数据中显式构造多模态，并在报告中说明真实数据的模态情况。
+  - 推理路径混入后验是这类实现最常见的隐蔽错误（表现为指标虚高）；用单元测试与代码审查双重拦截。
+  - 动作分块降低推理频率但引入响应滞后；时间集成用平滑性换一部分滞后，必须同时报告两个指标。
+  - 时间集成的"补零"是隐蔽 bug：缺步必须裁剪或重归一化，否则会系统性拉向原点。
+  - 图像与状态的归一化必须同源；训练侧的统计不能用于推理侧未对齐的字段顺序。
+  - Cartographer 的坐标与时间戳是两个独立陷阱：frame 名对了但时间域不同，会让对齐完全失效。
+  - 多帧视觉的时间跨度要与控制频率匹配：K 太大会引入滞后，太小则丢信息，需用 A7 消融确认。
+  - 离线指标好不等于闭环稳定：必须做闭环滚动测试，并检查动作是否出现低频振荡。
+  - 所有"SLAM 提升了性能"的结论，必须用 A4（去掉 Cartographer 输入）对照证明，且两配置只差位姿输入。
+  - 记录失败案例与复现失败的实验：它们和成功结果一样是报告素材。
+
+
+=====================================================================
+现在开始执行：按 S0 → S12 顺序推进，先建工程与配置，再实现数据管线，
+再实现 CVAE + 动作分块 + 时间集成，再接入 Cartographer（或按【十】降级），
+最后完成训练、推理、消融与验证，并把每个阶段产物按【五】的文件职责
+统一落盘到 `<环境与工具根>`。
+=====================================================================

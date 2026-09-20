@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0.0",
+  "created": "2026-09-20",
+  "description": "CVAE + action chunking + temporal ensemble 数据集契约。字段顺序即张量顺序，与 configs/data.yaml 保持一致。",
+  "episode": {
+    "file_pattern": "episode_{index:04d}.npz",
+    "required": {
+      "images": {"dtype": "uint8", "shape": ["T", 3, 64, 64], "unit": "px", "range": [0, 255], "desc": "RGB 观测序列，通道顺序 RGB"},
+      "state": {"dtype": "float32", "shape": ["T", "d_s"], "unit": "mixed", "desc": "状态矩阵，列顺序由 configs/data.yaml:state.blocks 决定"},
+      "action": {"dtype": "float32", "shape": ["T", 7], "unit": "mixed", "range": null, "desc": "动作 [dx, dy, dz, rx, ry, rz, gripper]，前 6 维为增量"},
+      "timestamp": {"dtype": "float64", "shape": ["T"], "unit": "s", "desc": "采集时钟（单调，单位 s）"},
+      "base_pose": {"dtype": "float32", "shape": ["T", 3], "unit": "mixed", "desc": "机器人基座真值位姿 [x, y, yaw]（m, m, rad），用于 SLAM 参考轨迹与 mock"},
+      "slam_pose": {"dtype": "float32", "shape": ["T", 3], "unit": "mixed", "desc": "进入状态向量的 SLAM 位姿 [x, y, yaw]；缺失段以 valid=0 标记，禁止填 0 冒充"},
+      "slam_valid": {"dtype": "uint8", "shape": ["T"], "range": [0, 1], "desc": "1=该帧 SLAM 位姿有效，0=无效（含丢帧、超容差、桥接不可用）"},
+      "episode_id": {"dtype": "str", "desc": "episode 唯一标识"},
+      "success": {"dtype": "uint8", "shape": [], "range": [0, 1], "desc": "任务成功标记"},
+      "source": {"dtype": "str", "choices": ["MOCK", "REAL"], "desc": "数据来源；MOCK 数据不得用于真实结论"}
+    },
+    "optional": {
+      "depth": {"dtype": "float32", "shape": ["T", 64, 64], "unit": "m", "desc": "可选深度图"},
+      "ee_pose": {"dtype": "float32", "shape": ["T", 7], "unit": "mixed", "desc": "末端位姿 [x,y,z,qw,qx,qy,qz]；缺省时由 state 块提供"}
+    }
+  },
+  "state_blocks": {
+    "order": ["joint_pos", "joint_vel", "gripper", "ee_pose", "slam_pose", "slam_valid", "time_feat"],
+    "dims": {"joint_pos": 7, "joint_vel": 7, "gripper": 1, "ee_pose": 7, "slam_pose": 4, "slam_valid": 1, "time_feat": 2},
+    "notes": "slam_pose 块为 [dx, dy, sin(yaw), cos(yaw)]（相对 episode 起点）；slam_valid 与 time_feat 不做线性归一化。"
+  },
+  "sample": {
+    "fields": {
+      "images": {"shape": ["K", "C", "H", "W"], "desc": "K 帧历史观测"},
+      "state": {"shape": ["d_s"]},
+      "action_chunk": {"shape": ["H", 7], "desc": "未来 H 步动作块（唯一监督目标）"},
+      "mask": {"shape": ["H"], "range": [0, 1], "desc": "0=padding 无效步，损失与时间集成都必须乘掩码"},
+      "slam_valid": {"shape": ["d_s"], "desc": "与 state 对齐的有效性标志（0 表示该维来源无效）"},
+      "meta": {"desc": "episode_id / t0 / split / source"}
+    }
+  },
+  "invariants": [
+    "timestamp 必须严格单调递增",
+    "action 与 state 不得包含 NaN/Inf",
+    "slam_valid=0 的帧不得用 0 位姿参与训练（按 configs/data.yaml filters.reject_invalid_slam 决定丢弃或标记）",
+    "跨 episode 禁止拼接窗口",
+    "images 与 state 使用同一时钟对齐（容差见 configs/slam.yaml sync.max_align_tolerance_s）"
+  ]
+}

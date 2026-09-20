@@ -1,0 +1,35 @@
+# configs/model.yaml
+# 作用：网络结构超参唯一事实源。任何结构变更必须同步更新 docs/algorithm_notes.md 的结构图。
+vision:
+  backbone: small_cnn        # small_cnn（自带实现，权重可随机初始化/可加载）
+  in_channels: 3
+  feature_dim: 128
+  pretrained: false          # 无网络下载权重时保持 false（离线可复现）
+  freeze: false
+  norm: group                # group | batch | none
+
+aggregation:
+  mode: gru                  # last | mean | gru（多帧视觉聚合方式）
+  hidden: 128
+
+state_encoder:
+  hidden: [128, 128]
+  activation: relu
+  dropout: 0.1
+
+latent:
+  enabled: true              # A1（no_cvae）置 false：退化为确定性动作块回归，无 KL
+  dim: 16
+  prior_hidden: [128, 128]
+  posterior_hidden: [256, 256]
+  logvar_clamp: [-6.0, 4.0]  # 防止 exp(log_var) 爆炸
+
+decoder:
+  hidden: [256, 256]
+  activation: relu
+  dropout: 0.1
+  output_mode: chunk_full    # chunk_full：一次输出 [B, H, d_a]
+
+fusion:
+  mode: concat               # 视觉特征与状态编码的融合方式
+  action_head_hidden: [256, 256]

@@ -1,0 +1,96 @@
+# configs/train.yaml
+# 作用：训练超参与策略唯一事实源。所有损失权重均可被 configs/ablation/*.yaml 独立覆盖。
+seed: 0
+# CUDA 显式启用（本机 RTX 5070 Laptop / sm_120 / torch 2.14.0+cu130）。
+# 语义：cuda = 必须用 GPU，若 torch.cuda.is_available() 为 false 则启动即报 ConfigError，
+#       绝不允许"静默退回 CPU"把 GPU 结论写进报告；
+#       auto = 有 GPU 用 GPU、没有才用 CPU（仅用于无 GPU 环境的降级复现）；
+#       cpu  = 强制 CPU（仅用于 CPU 基线对照，报告中必须标注 CPU_ONLY）。
+device: cuda
+epochs: 60
+# batch 大小：在 8GB 显存内尽量放大，摊薄每步的 CPU/Python 开销 → 提高 GPU 有效占比
+batch_size: 192
+max_steps: null              # 非 null 时覆盖 epochs（smoke 用）
+
+optimizer:
+  name: adamw                # adamw | adam | sgd
+  # 学习率与轮数依据：单 batch 门禁 + 短跑实测（3e-4 时 recon 0.42 → 0.20 用了 300 步且仍下降缓慢）；
+  # 1e-3 在 AdamW + 梯度裁剪 1.0 下稳定且收敛更快，记录见 docs/experiments.md。
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  momentum: 0.9              # 仅 sgd 使用
+
+scheduler:
+  name: cosine               # none | cosine | step
+  warmup_steps: 50
+  min_lr_ratio: 0.05
+
+grad_clip: 1.0
+amp: true                    # 混合精度：让 GPU 在单位时间内完成更多计算（主算力放 CUDA）
+num_workers: 0
+deterministic: false         # true 时调用 torch.use_deterministic_algorithms（有性能代价）
+
+loss:
+  recon:
+    type: huber              # l1 | mse | huber
+    huber_delta: 1.0
+    weight: 1.0
+    step_weight_mode: decay  # uniform | decay（decay：越靠后的步权重越低）
+    step_weight_decay: 0.95
+  kl:
+    enabled: true            # A1（no_cvae）置 false
+    # beta 终值与 free-bits 的取值依据（实测，见 docs/experiments.md 记录）：
+    #   归一化动作上的 Huber 重建损失量级为 0.03~0.4，而潜变量一被使用 KL 就是数个 nats，
+    #   beta=1.0 会让后验立刻塌缩（KL→0，退化为无条件 VAE）；
+    #   free_bits=0.02/维 给出每维 KL 下限，避免"用一点潜变量就被罚"的零梯度区。
+    weight: 0.05             # beta 终值
+    free_bits: 0.02          # >0 时启用 free-bits（每维 KL 下限，单位 nats）
+    anneal:
+      scheme: linear         # linear | cosine | cyclical | none
+      warmup_steps: 300
+      start: 0.0
+      end: 0.05
+  smooth:
+    enabled: true
+    weight: 0.05
+    order: 1                 # 1=一阶差分，2=二阶差分（jerk）
+  temporal_consistency:
+    enabled: false
+    weight: 0.0
+    shift: 1                 # 相邻窗口重叠部分的对齐步数
+
+validation:
+  every_n_epochs: 2
+  batch_limit: 20
+
+checkpoint:
+  every_n_epochs: 5
+  monitor: val/total
+  mode: min
+  early_stop_patience: 12
+
+overfit_gate:
+  enabled: true
+  steps: 300
+  batch_size: 16
+  loss_drop_threshold: 0.5   # 末步 loss ≤ 首步 loss * (1 - threshold) 视为通过
+  log_every: 50
+
+dataloader:
+  drop_last: true
+  pin_memory: true
+  # num_workers: null = 按 CPU 核数自动推导（见 src/utils/device_profile.py）：
+  #   num_workers = clamp(cpu_count / worker_cpu_divisor, 1, max_workers)
+  # 目的：让 CPU 侧并行供给数据、GPU 侧连续计算，避免"单线程喂 GPU"或"32 核抢核"两种极端。
+  num_workers: null
+  persistent_workers: true
+  prefetch_factor: 4
+
+# CPU/GPU 分工策略（不偏科）：全部字段都可覆盖，实测结论写入 logs/20_device_usage.json
+device_policy:
+  max_workers: 8             # worker 上限（避免过多进程的内存与调度开销）
+  worker_cpu_divisor: 4      # 每 4 个 CPU 核分配 1 个 worker
+  torch_threads: null        # 主进程 CPU 线程数；null = min(8, cpu_count/4)
+  non_blocking: true         # pin_memory + 非阻塞 H2D 拷贝
+  gpu_idle_warn_ratio: 0.30  # 数据等待+H2D 超过该比例即判定为 CPU/传输瓶颈并给出建议
+  timing_every: 10           # 每隔多少 step 做一次带 cuda.synchronize 的精确计时（其余步不计时以免拖慢训练）

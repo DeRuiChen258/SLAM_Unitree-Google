@@ -1,0 +1,5 @@
+# configs/ablation/ensemble_exp_d1p0.yaml —— A6：decay=1.0（等价于所有历史预测等权，最平滑但滞后最大）
+infer:
+  temporal_ensemble:
+    mode: exponential
+    decay: 1.0

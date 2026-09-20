@@ -1,0 +1,60 @@
+# configs/infer.yaml
+# 作用：推理解码、执行策略与安全限幅唯一事实源。
+checkpoint: best             # last | best | 绝对路径
+split: test                  # val | test
+# 推理同样显式走 CUDA；延迟指标（p50/p95）只有在 GPU 上测量才代表真实部署口径。
+device: cuda
+
+latent:
+  mode: mean                 # mean | sample（推理只允许先验，禁止后验）
+  n_samples: 1               # >1 时展示多模态
+  sample_seed: 0
+
+chunk_exec:
+  n_exec: 4                  # 每次预测后执行的步数（<= H）
+  mode: closed_loop          # closed_loop | open_loop
+
+temporal_ensemble:
+  enabled: true              # A3（no_temporal_ensemble）置 false
+  mode: exponential          # uniform | exponential | inverse_age
+  decay: 0.5                 # exponential 的底数（A6 扫描 0.5 / 1.0）
+  window: 8                  # 保留的最近预测条数上限
+  min_weight: 1.0e-3         # 低于此权重视为过期
+  normalize_weights: true
+
+limits:
+  max_translation_per_step: 0.06   # m（与 configs/data.yaml action.delta_translation_limit 一致）
+  max_rotation_per_step: 0.12      # rad
+  max_gripper_rate: 0.15           # /step
+  max_action_delta: 0.10           # 相邻执行步最大变化（速度上限）
+
+safety:
+  allow_command_publish: false     # 默认关闭；打开前必须完成安全门禁
+  require_estop_reachable: true
+  require_watchdog: true
+  watchdog_timeout_s: 1.0          # 观测/位姿超时即停止输出
+  max_clip_events: 200             # 超过即中止闭环（防止异常持续下发）
+  fail_fast_on_nan: true
+
+episode:
+  max_steps: 200
+  stop_on_success_flag: true
+
+logging:
+  save_executed_actions: true
+  save_weight_sources: true
+
+# 推理侧同样显式声明分工：GPU 只做前向；评测量化、批拼装、落盘都在 CPU 侧并行完成
+device_policy:
+  max_workers: 6
+  worker_cpu_divisor: 4
+  torch_threads: null
+  non_blocking: true
+  gpu_idle_warn_ratio: 0.30
+  timing_every: 10
+
+dataloader:
+  num_workers: null
+  pin_memory: true
+  persistent_workers: false
+  prefetch_factor: 2

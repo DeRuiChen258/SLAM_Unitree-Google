@@ -1,0 +1,4 @@
+# configs/ablation/ensemble_uniform.yaml —— A6：时间集成权重策略 = uniform-in-chunk
+infer:
+  temporal_ensemble:
+    mode: uniform

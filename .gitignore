@@ -1,23 +1,44 @@
-### AL ###
-#Template for AL projects for Dynamics 365 Business Central
-#launch.json folder
+# 大文件与运行产物（在 data/manifest.json 与 docs 中登记来源与哈希，不进仓库）
+data/raw/
+data/mock/
+data/processed/
+data/slam/*.npz
+data/slam/pose_stream.jsonl
+data/bags/
+data/*_manifest.json
+data/manifest*.json
+data/splits/*.json
+data/stats/*.json
+checkpoints/
+logs/
+outputs/ablation/
+outputs/eval/
+outputs/infer_samples/
+outputs/slam/*.pbstream
+outputs/slam/*.pgm
+outputs/slam/*.csv
+outputs/REPORT.md
+third_party/
+install_cartographer/
+
+# 例外：保留图（图较小，且是报告素材）
+!outputs/figures/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# 编辑器 / 系统
 .vscode/
-#Cache folder
-.alcache/
-#Symbols folder
-.alpackages/
-#Snapshots folder
-.snapshots/
-#Testing Output folder
-.output/
-#Extension App-file
-*.app
-#Rapid Application Development File
-rad.json
-#Translation Base-file
-*.g.xlf
-#License-files
-*.bclicense
-*.flf
-#Test results file
-TestResults.xml
+.idea/
+*.swp
+.DS_Store
+
+# 临时与缓存
+*.tmp
+.cache/

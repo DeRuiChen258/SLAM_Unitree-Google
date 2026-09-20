@@ -1,0 +1,58 @@
+# configs/paths.yaml
+# 作用：全工程唯一路径事实源。src/utils/config.py 会加载本文件并解析 ${...} 占位符
+#       （取值顺序：本文件内的键 → 同名环境变量，例如 ${HOME}）。
+#
+# 目录职责：
+#   * 项目根 project_root = 本实验的全部算法代码/配置/数据/产物/文档（唯一部署根）；
+#   * 环境与工具根 env_root = conda 环境锁定文件、环境激活脚本、Cartographer 源码构建脚本与构建产物；
+#     它只提供**外部依赖**，不承载任何实验逻辑，因此通过绝对路径引用（允许环境变量覆盖）。
+# 约束：project_root 固定（哨兵值 `auto` = 由 src/utils/config.py 的代码位置自动推导，
+#       克隆到任意目录都能跑，禁止把本机绝对路径写进仓库），禁止被环境变量或 CLI 覆盖；
+#       只有「外部依赖 / 外部数据」路径允许环境变量覆盖，覆盖变量名在 override_env 中声明。
+project_root: auto
+
+# ---- 工程内部路径（全部相对 project_root 派生，禁止外置）----
+data_dir: ${project_root}/data
+raw_dir: ${data_dir}/raw
+mock_dir: ${data_dir}/mock
+processed_dir: ${data_dir}/processed
+splits_dir: ${data_dir}/splits
+stats_dir: ${data_dir}/stats
+schema_dir: ${data_dir}/schema
+slam_data_dir: ${data_dir}/slam
+bag_dir_placeholder: ${data_dir}/bags
+configs_dir: ${project_root}/configs
+scripts_dir: ${project_root}/scripts
+src_dir: ${project_root}/src
+tests_dir: ${project_root}/tests
+docs_dir: ${project_root}/docs
+evidence_dir: ${project_root}/evidence
+logs_dir: ${project_root}/logs
+checkpoints_dir: ${project_root}/checkpoints
+outputs_dir: ${project_root}/outputs
+figures_dir: ${outputs_dir}/figures
+eval_dir: ${outputs_dir}/eval
+ablation_dir: ${outputs_dir}/ablation
+slam_out_dir: ${outputs_dir}/slam
+infer_samples_dir: ${outputs_dir}/infer_samples
+third_party_dir: ${project_root}/third_party
+
+# ---- 外部依赖路径（允许环境变量覆盖）----
+# 下面的 ${HOME}/... 是作者本机的默认布局；换机器时优先用 override_env 里的环境变量覆盖
+env_root: ${HOME}/Workspace/IDE/Physical_AI/SLAM
+train_env_name: unitree_rt
+train_python: ${HOME}/Workspace/miniconda/envs/unitree_rt/bin/python
+conda_base: ${HOME}/Workspace/miniconda
+unitree_workspace: ${HOME}/Workspace/Code/Embedded_code/unitree_workspace
+ros2_env_script: ${unitree_workspace}/config/ros2_env.sh
+ros2_setup_bash: ${unitree_workspace}/ros2/ros2-linux/setup.bash
+cartographer_env_name: cartographer_ros
+cartographer_prefix: ${HOME}/Workspace/miniconda/envs/cartographer_ros
+cartographer_core_prefix: ${project_root}/install_cartographer
+external_bag_dir: ${unitree_workspace}/data/bags
+
+# 环境变量覆盖表：仅这些外部路径可被覆盖（值形如 ENV_NAME）
+override_env:
+  external_bag_dir: CVSLAM_BAG_DIR
+  cartographer_prefix: CVSLAM_CARTOGRAPHER_PREFIX
+  env_root: CVSLAM_ENV_ROOT

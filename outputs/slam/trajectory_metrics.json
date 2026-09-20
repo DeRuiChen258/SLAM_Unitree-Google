@@ -1,0 +1,54 @@
+{
+  "n_samples": 1037,
+  "ate_rmse_m": 0.027476315898519014,
+  "ate_mean_m": 0.0067059710443124875,
+  "ate_max_m": 0.4444757786921832,
+  "ate_rmse_unaligned_m": 1.4828447968435279,
+  "ate_mean_unaligned_m": 1.4276965557376298,
+  "rpe_rmse_m": 0.03597056060750769,
+  "rpe_mean_m": 0.006780009893367305,
+  "rpe_delta_s": 1.0,
+  "yaw_err_mean_rad": 0.0023630398935284513,
+  "yaw_err_max_rad": 0.15525455580381076,
+  "reference_path_length_m": 59.640725948919325,
+  "final_drift_m": 0.0015903299606313927,
+  "alignment": {
+    "mode": "umeyama_rigid",
+    "matrix": [
+      [
+        0.8330510964582356,
+        -0.5531960508623788,
+        6.189722214533162e-16
+      ],
+      [
+        0.5531960508623788,
+        0.8330510964582357,
+        -9.410041663355373e-16
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "direction": "estimate→reference",
+    "with_scale": false
+  },
+  "yaw_offset_rad": 0.5861959328402705,
+  "status": "OK",
+  "reference_source": "MOCK",
+  "reference_file": "data/slam/ground_truth.json",
+  "estimate_file": "data/slam/pose_stream.jsonl",
+  "estimate_sources": [
+    "cartographer_pbstream"
+  ],
+  "time_alignment": {
+    "method": "nearest_neighbor",
+    "tolerance_s": 0.2,
+    "n_estimate_samples": 1037,
+    "n_invalid_samples": 0,
+    "n_aligned_used": 1037,
+    "time_span_s": 118.8
+  },
+  "evidence_level": "MOCK 真值 + 真实 Cartographer 输出（精度数字仅代表仿真世界，不代表真实场地）"
+}

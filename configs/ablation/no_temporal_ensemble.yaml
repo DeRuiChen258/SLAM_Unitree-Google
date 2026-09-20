@@ -1,0 +1,5 @@
+# configs/ablation/no_temporal_ensemble.yaml —— A3：去掉时间集成（只用最新 chunk）
+# 纯推理侧消融：训练配置完全不变，因此直接复用 base 的 checkpoint 与数据。
+infer:
+  temporal_ensemble:
+    enabled: false

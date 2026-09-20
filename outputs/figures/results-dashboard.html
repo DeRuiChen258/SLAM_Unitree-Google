@@ -1,0 +1,337 @@
+<div id="cvae-slam-viz">
+<style>
+#cvae-slam-viz{--bg:#0f1115;--card:#171a21;--line:#262b36;--fg:#e8eaf0;--dim:#98a0b3;--acc:#4ea1ff;--acc2:#ff6b6b;--acc3:#ffd166;--ok:#3ddc97;font-family:ui-sans-serif,system-ui,"Segoe UI",Roboto,"Noto Sans CJK SC",sans-serif;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:14px;padding:14px 16px 16px;max-width:1000px;box-sizing:border-box}
+#cvae-slam-viz *{box-sizing:border-box}
+#cvae-slam-viz .hd{display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;justify-content:space-between}
+#cvae-slam-viz h3{margin:0;font-size:15px;letter-spacing:.2px}
+#cvae-slam-viz .mock{font-size:11px;color:#ffd166;border:1px solid #4a4326;background:#241f0f;border-radius:99px;padding:2px 8px}
+#cvae-slam-viz .tabs{display:flex;gap:6px;margin:12px 0 10px;flex-wrap:wrap}
+#cvae-slam-viz .tab{cursor:pointer;font-size:12px;padding:6px 11px;border-radius:8px;border:1px solid var(--line);background:#12151b;color:var(--dim)}
+#cvae-slam-viz .tab[aria-selected="true"]{background:#1d2430;color:var(--fg);border-color:#38506e}
+#cvae-slam-viz .panel{display:none;gap:12px;grid-template-columns:1fr}
+#cvae-slam-viz .panel.on{display:grid}
+#cvae-slam-viz .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+#cvae-slam-viz .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+#cvae-slam-viz .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+#cvae-slam-viz .cap{font-size:11px;color:var(--dim);margin:0 0 6px}
+#cvae-slam-viz .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+#cvae-slam-viz .chip{font-size:11px;color:var(--dim);background:#12151b;border:1px solid var(--line);border-radius:7px;padding:4px 7px}
+#cvae-slam-viz .chip b{color:var(--fg);font-weight:600;font-variant-numeric:tabular-nums}
+#cvae-slam-viz .verdict{color:var(--ok);font-weight:600}
+#cvae-slam-viz svg{display:block;width:100%;height:auto;overflow:visible}
+#cvae-slam-viz .ax{stroke:#3a4152;stroke-width:1}
+#cvae-slam-viz .gl{stroke:#232936;stroke-width:1}
+#cvae-slam-viz .lbl{fill:var(--dim);font-size:10px}
+#cvae-slam-viz table{width:100%;border-collapse:collapse;font-size:11.5px;font-variant-numeric:tabular-nums}
+#cvae-slam-viz th,#cvae-slam-viz td{text-align:right;padding:5px 6px;border-bottom:1px solid var(--line)}
+#cvae-slam-viz th:first-child,#cvae-slam-viz td:first-child{text-align:left}
+#cvae-slam-viz th{color:var(--dim);font-weight:500}
+#cvae-slam-viz tr.best td{color:var(--ok)}
+#cvae-slam-viz .tip{font-size:11px;color:var(--fg);background:#0b0d12;border:1px solid var(--line);border-radius:6px;padding:3px 6px;font-variant-numeric:tabular-nums}
+#cvae-slam-viz .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--dim);margin-top:4px}
+#cvae-slam-viz .legend i{display:inline-block;width:10px;height:3px;border-radius:2px;margin-right:5px;vertical-align:middle}
+</style>
+<div class="hd">
+  <h3>CVAE 策略 × Cartographer SLAM · 实验结果</h3>
+  <span class="mock">MOCK 数据 · 无真机 · 动作下发关闭</span>
+</div>
+<div class="tabs" role="tablist">
+  <button class="tab" role="tab" data-p="train" aria-selected="true">训练</button>
+  <button class="tab" role="tab" data-p="eff" aria-selected="false">算力与时间集成</button>
+  <button class="tab" role="tab" data-p="slam" aria-selected="false">SLAM 轨迹</button>
+  <button class="tab" role="tab" data-p="abl" aria-selected="false">消融</button>
+</div>
+
+<div class="panel on" id="cvae-slam-viz-p-train">
+  <div class="card">
+    <p class="cap">训练损失（纵轴=损失值，横轴=训练步 step）：total / recon / KL(nats) —— 悬停查看数值；β 退火见下方小图</p>
+    <svg id="cvae-slam-viz-loss" viewBox="0 0 900 260" preserveAspectRatio="xMidYMid meet"></svg>
+    <div class="legend"><span><i style="background:#4ea1ff"></i>total</span><span><i style="background:#3ddc97"></i>recon</span><span><i style="background:#ffd166"></i>KL(nats)</span></div>
+    <div class="grid2" style="margin-top:10px">
+      <div>
+        <p class="cap">KL 权重 β（warmup→0.05，含 free-bits 0.02/维）</p>
+        <svg id="cvae-slam-viz-beta" viewBox="0 0 440 110" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+      <div>
+        <p class="cap">单 batch 过拟合门禁（前 30 步均值 → 末 30 步均值）</p>
+        <svg id="cvae-slam-viz-gate" viewBox="0 0 440 110" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+    </div>
+    <div class="chips" id="cvae-slam-viz-train-chips"></div>
+  </div>
+</div>
+
+<div class="panel" id="cvae-slam-viz-p-eff">
+  <div class="card">
+    <p class="cap">每步耗时在 CPU / 传输 / GPU 之间的分配（实测，非配置声明）</p>
+    <svg id="cvae-slam-viz-dev" viewBox="0 0 900 150" preserveAspectRatio="xMidYMid meet"></svg>
+    <div class="chips" id="cvae-slam-viz-dev-chips"></div>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <p class="cap">时间集成对动作抖动的抑制（二阶差分方差，越低越平滑）</p>
+      <svg id="cvae-slam-viz-jit" viewBox="0 0 440 190" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+    <div class="card">
+      <p class="cap">动作分块 H 的推理摊销（每次预测 p50 ÷ n_exec）</p>
+      <svg id="cvae-slam-viz-lat" viewBox="0 0 440 190" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+  </div>
+  <div class="card">
+    <div class="chips" id="cvae-slam-viz-eff-chips"></div>
+  </div>
+</div>
+
+<div class="panel" id="cvae-slam-viz-p-slam">
+  <div class="grid2">
+    <div class="card">
+      <p class="cap">Cartographer 轨迹 vs MOCK 世界真值（刚体对齐后，等比例坐标）</p>
+      <svg id="cvae-slam-viz-trajs" viewBox="0 0 460 420" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="legend"><span><i style="background:#98a0b3"></i>真值</span><span><i style="background:#ff6b6b"></i>Cartographer</span></div>
+    </div>
+    <div class="card">
+      <p class="cap">位置误差随回放时间（对齐后，来自相同采样点）</p>
+      <svg id="cvae-slam-viz-slamerr" viewBox="0 0 460 200" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="chips" id="cvae-slam-viz-slam-chips"></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="chips" id="cvae-slam-viz-slam-flow"></div>
+  </div>
+</div>
+
+<div class="panel" id="cvae-slam-viz-p-abl">
+  <div class="card">
+    <p class="cap">消融矩阵（同一 splits / 同一 seed；recon 在不同 H 之间不可直接比较）</p>
+    <table id="cvae-slam-viz-abl"></table>
+    <div class="chips" id="cvae-slam-viz-abl-chips"></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var ROOT='cvae-slam-viz';
+  var root=document.getElementById(ROOT);
+  if(!root){return;}
+  function q(id){return root.querySelector('#'+ROOT+'-'+id);}
+  var F={total:'total',recon:'recon',kl:'kl',beta:'beta',step:'step'};
+  var TRAIN={"step":[1,5,14,24,28,38,47,51,61,70,75,84,93,98,107,116,121,130,139,144,153,162,167,176,186,190,199,209,213,223,232,241,246,255,264,269,278,287,292,301,310,315,324,334,338,347,357,361,371,380,384,394,403,408,417,426,431,440,449,450],"total":[0.3886,0.3552,0.3416,0.3666,0.3685,0.2351,0.1733,0.1672,0.1392,0.1256,0.1174,0.09444,0.1024,0.08281,0.08951,0.07695,0.09243,0.08274,0.08188,0.07349,0.08725,0.08057,0.08986,0.07817,0.08279,0.07412,0.08663,0.07616,0.07885,0.08311,0.07931,0.0796,0.08672,0.07381,0.08593,0.07434,0.07685,0.07378,0.0929,0.0776,0.09251,0.07974,0.07417,0.0816,0.07331,0.08368,0.07472,0.07908,0.07909,0.07916,0.07218,0.07716,0.07314,0.07228,0.07967,0.07958,0.07202,0.07681,0.07346,0.07966],"recon":[0.3858,0.3524,0.3393,0.3637,0.3642,0.2223,0.1629,0.1568,0.1286,0.1156,0.1062,0.08208,0.08939,0.06954,0.07689,0.06404,0.07777,0.0695,0.06833,0.06004,0.07249,0.06644,0.07467,0.06364,0.06747,0.05858,0.07014,0.05976,0.06206,0.06647,0.06272,0.06229,0.06896,0.05572,0.06699,0.05613,0.0584,0.05451,0.07318,0.05685,0.07206,0.05934,0.05416,0.06124,0.05423,0.06341,0.05467,0.05903,0.05912,0.05916,0.05264,0.05696,0.05361,0.05276,0.05994,0.05919,0.05215,0.05734,0.05401,0.05929],"kl":[0.32,0.32,0.32,0.3719,0.5051,0.7858,0.4156,0.5149,0.445,0.4731,0.4959,0.5008,0.4971,0.5134,0.4457,0.4249,0.4952,0.4107,0.4038,0.4003,0.4166,0.3785,0.4038,0.3723,0.3715,0.3746,0.3726,0.3629,0.3707,0.3566,0.3495,0.3487,0.3439,0.3435,0.354,0.3361,0.3327,0.3319,0.3402,0.3523,0.3389,0.3415,0.3372,0.3388,0.3283,0.3402,0.3389,0.337,0.3371,0.3349,0.3341,0.3374,0.3325,0.3271,0.3349,0.345,0.3371,0.3315,0.3301,0.3404],"beta":[0.0001667,0.0008333,0.002333,0.004,0.004667,0.006333,0.007833,0.0085,0.01017,0.01167,0.0125,0.014,0.0155,0.01633,0.01783,0.01933,0.02017,0.02167,0.02317,0.024,0.0255,0.027,0.02783,0.02933,0.031,0.03167,0.03317,0.03483,0.0355,0.03717,0.03867,0.04017,0.041,0.0425,0.044,0.04483,0.04633,0.04783,0.04867,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05,0.05]};
+  var EFF={"device":{"data_ratio":0.0033,"h2d_ratio":0.0023,"compute_ratio":0.9944,"data_ms":0.075,"h2d_ms":0.053,"compute_ms":22.573,"verdict":"GPU_BOUND","n_steps":52,"batch_size":192,"workers":8,"torch_threads":8,"device":"cuda"},"ts":{"steps":456,"duration_s":21.795685291290283,"best_val":0.06944791310363346,"params":814616,"seed":0},"gate":{"status":"PASS","loss_first_window":0.2778770372271538,"loss_last_window":0.04464423420528571,"relative_drop":0.8393381667993287,"threshold":0.5,"batch_size":16,"steps":300},"eval":{"recon_l1":0.23505238857534197,"latency":{"p50_ms":2.956272999654175,"p95_ms":2.994821000174852,"mean_ms":2.824944714250575},"diversity":0.05788339301943779,"hit_rate":0.06834795325994492,"jitter_no_ensemble":9.138006165954719e-07,"jitter_ensemble":8.711197045617853e-07},"closed":{"executed_steps":60,"publish_allowed":false,"clip_events":0,"nan_events":0,"events":0,"pose_source":"cartographer_pose_stream"},"abl":[{"run":"base","status":"OK","recon":0.235052,"latency_per_step_ms":0.739068,"jitter_no_ensemble":9.13801e-07,"jitter_ensemble":8.7112e-07,"n_exec":4.0},{"run":"chunk_len_H16","status":"OK","recon":0.313235,"latency_per_step_ms":0.740623,"jitter_no_ensemble":9.22516e-07,"jitter_ensemble":8.66964e-07,"n_exec":4.0},{"run":"chunk_len_H32","status":"OK","recon":0.372748,"latency_per_step_ms":0.742117,"jitter_no_ensemble":7.06397e-07,"jitter_ensemble":6.58068e-07,"n_exec":4.0},{"run":"chunk_len_H4","status":"OK","recon":0.190399,"latency_per_step_ms":0.746294,"jitter_no_ensemble":9.49316e-07,"jitter_ensemble":9.49316e-07,"n_exec":4.0},{"run":"no_chunk","status":"OK","recon":0.162814,"latency_per_step_ms":3.05526,"jitter_no_ensemble":2.57367e-07,"jitter_ensemble":2.57367e-07,"n_exec":1.0},{"run":"no_cvae","status":"OK","recon":0.230532,"latency_per_step_ms":0.744083,"jitter_no_ensemble":1.11157e-06,"jitter_ensemble":1.05986e-06,"n_exec":4.0},{"run":"no_slam_input","status":"OK","recon":0.23536,"latency_per_step_ms":0.757899,"jitter_no_ensemble":1.08635e-06,"jitter_ensemble":1.0453e-06,"n_exec":4.0},{"run":"ensemble_uniform","status":"INFER_ONLY","recon":null,"latency_per_step_ms":0.739068,"jitter_no_ensemble":9.13801e-07,"jitter_ensemble":7.92655e-07,"n_exec":4.0},{"run":"no_temporal_ensemble","status":"INFER_ONLY","recon":null,"latency_per_step_ms":0.739068,"jitter_no_ensemble":9.13801e-07,"jitter_ensemble":9.13801e-07,"n_exec":4.0}]};
+  var SLAM={"est":[[0.792,1.091],[0.832,1.087],[0.944,1.091],[1.186,0.967],[1.237,0.84],[1.118,0.6],[0.886,0.405],[0.616,0.194],[0.377,0.022],[0.08,-0.183],[-0.202,-0.377],[-0.449,-0.545],[-0.601,-0.663],[-0.732,-0.777],[-0.782,-0.85],[-0.766,-0.881],[-0.661,-0.886],[-0.494,-0.843],[-0.259,-0.766],[-0.049,-0.677],[0.244,-0.546],[0.531,-0.391],[0.8,-0.222],[0.981,-0.088],[1.185,0.115],[1.27,0.38],[1.109,0.544],[0.753,0.621],[0.451,0.627],[0.111,0.591],[-0.167,0.539],[-0.511,0.441],[-0.826,0.319],[-1.086,0.175],[-1.31,-0.016],[-1.405,-0.337],[-1.231,-0.562],[-1.023,-0.668],[-0.812,-0.733],[-0.515,-0.779],[-0.202,-0.791],[0.046,-0.768],[0.335,-0.708],[0.579,-0.61],[0.861,-0.317],[0.854,-0.024],[0.609,0.33],[0.386,0.518],[0.124,0.687],[-0.101,0.806],[-0.381,0.921],[-0.635,0.997],[-0.808,1.03],[-0.966,1.027],[-1.052,0.98],[-1.053,0.888],[-0.994,0.784],[-0.844,0.62],[-0.622,0.427],[-0.337,0.209],[-0.083,0.023],[0.257,-0.214],[0.595,-0.449],[0.908,-0.672],[1.123,-0.828],[1.372,-1.033],[1.508,-1.259],[1.237,-1.235],[0.988,-1.15],[0.696,-1.019],[0.366,-0.848],[0.104,-0.69],[-0.214,-0.463],[-0.496,-0.224],[-0.721,0.023],[-0.851,0.218],[-0.95,0.538],[-0.812,0.903],[-0.498,1.085],[-0.245,1.141],[0.034,1.144],[0.309,1.104],[0.513,1.034],[0.88,0.757],[0.959,0.366],[0.779,0.023],[0.617,-0.151],[0.362,-0.352],[0.055,-0.535],[-0.267,-0.685],[-0.529,-0.787],[-0.837,-0.875],[-1.101,-0.92],[-1.27,-0.927],[-1.408,-0.9],[-1.464,-0.83],[-1.431,-0.728],[-1.341,-0.622],[-1.153,-0.471],[-0.896,-0.302],[-0.586,-0.127],[-0.317,0.012],[0.028,0.178],[0.359,0.329],[0.598,0.433],[0.893,0.553],[1.145,0.641],[1.083,0.592],[0.969,0.536],[0.772,0.432],[0.525,0.305],[0.246,0.161],[0.021,0.035],[-0.252,-0.128],[-0.488,-0.284],[-0.673,-0.43],[-0.767,-0.532],[-0.817,-0.637],[-0.767,-0.723],[-0.521,-0.755],[-0.172,-0.704],[0.123,-0.62],[0.434,-0.503],[0.677,-0.386],[0.955,-0.223],[1.184,-0.041],[1.393,0.229],[1.428,0.518],[1.153,0.813],[0.842,0.926],[0.596,0.974],[0.253,0.994],[-0.097,0.962],[-0.436,0.895],[-0.684,0.807],[-0.94,0.657],[-1.131,0.483],[-1.239,0.276],[-1.262,0.1],[-1.21,-0.134],[-1.081,-0.363],[-0.879,-0.588],[-0.681,-0.749],[-0.397,-0.934],[-0.107,-1.079],[0.129,-1.167],[0.39,-1.237],[0.698,-1.25],[0.802,-1.187],[0.826,-1.109],[0.777,-0.97],[0.657,-0.787],[0.464,-0.58],[0.269,-0.394],[-0.009,-0.151],[-0.303,0.096],[-0.536,0.29],[-0.8,0.521],[-1.021,0.727],[-1.175,0.903],[-1.243,1.015],[-1.25,1.115],[-1.172,1.169],[-0.967,1.166],[-0.717,1.113],[-0.412,1.016],[-0.07,0.875],[0.283,0.702],[0.556,0.546],[0.868,0.329],[1.125,0.105],[1.282,-0.071],[1.426,-0.371],[1.337,-0.722],[0.982,-0.918],[0.768,-0.959],[0.469,-0.976],[0.158,-0.947],[-0.141,-0.878],[-0.356,-0.801],[-0.649,-0.613],[-0.817,-0.273],[-0.714,0.017],[-0.424,0.282],[-0.178,0.422],[0.101,0.534],[0.326,0.603],[0.597,0.649],[0.836,0.662],[1.015,0.635],[1.109,0.586],[1.156,0.498],[1.113,0.38],[0.986,0.243],[0.831,0.119],[0.574,-0.041],[0.265,-0.2],[-0.004,-0.322],[-0.347,-0.458],[-0.679,-0.573],[-0.979,-0.659],[-1.173,-0.701],[-1.353,-0.729],[-1.45,-0.713],[-1.451,-0.645],[-1.323,-0.521],[-1.03,-0.333],[-0.752,-0.164],[-0.501,-0.023],[-0.174,0.162],[0.145,0.345],[0.44,0.515],[0.638,0.64],[0.825,0.767],[0.938,0.87],[0.968,0.931],[0.932,0.949],[0.812,0.93],[0.628,0.871],[0.336,0.743]],"ref":[[0.363,0.976],[0.857,1.101],[1.202,1.105],[1.342,0.969],[1.297,0.837],[1.098,0.599],[0.876,0.402],[0.607,0.193],[0.372,0.024],[0.074,-0.183],[-0.207,-0.376],[-0.449,-0.547],[-0.602,-0.663],[-0.73,-0.776],[-0.779,-0.851],[-0.759,-0.881],[-0.661,-0.881],[-0.491,-0.841],[-0.261,-0.763],[-0.047,-0.677],[0.242,-0.544],[0.53,-0.39],[0.797,-0.223],[0.979,-0.086],[1.178,0.115],[1.264,0.378],[1.106,0.544],[0.747,0.624],[0.446,0.626],[0.109,0.59],[-0.171,0.536],[-0.514,0.44],[-0.827,0.317],[-1.088,0.172],[-1.308,-0.018],[-1.403,-0.339],[-1.228,-0.561],[-1.02,-0.668],[-0.812,-0.732],[-0.516,-0.78],[-0.202,-0.789],[0.046,-0.768],[0.333,-0.707],[0.574,-0.608],[0.857,-0.316],[0.851,-0.021],[0.605,0.332],[0.382,0.518],[0.119,0.687],[-0.105,0.803],[-0.383,0.918],[-0.638,0.995],[-0.809,1.027],[-0.969,1.025],[-1.054,0.978],[-1.055,0.886],[-0.995,0.782],[-0.846,0.619],[-0.622,0.425],[-0.339,0.207],[-0.083,0.022],[0.256,-0.214],[0.593,-0.446],[0.905,-0.666],[1.121,-0.825],[1.368,-1.026],[1.503,-1.253],[1.232,-1.23],[0.987,-1.145],[0.691,-1.015],[0.367,-0.846],[0.102,-0.686],[-0.215,-0.464],[-0.496,-0.224],[-0.72,0.021],[-0.85,0.216],[-0.951,0.535],[-0.814,0.902],[-0.502,1.084],[-0.246,1.139],[0.031,1.145],[0.305,1.103],[0.508,1.037],[0.876,0.76],[0.952,0.37],[0.775,0.023],[0.614,-0.148],[0.357,-0.352],[0.055,-0.534],[-0.269,-0.688],[-0.529,-0.786],[-0.835,-0.875],[-1.099,-0.922],[-1.266,-0.929],[-1.407,-0.9],[-1.463,-0.831],[-1.429,-0.727],[-1.338,-0.622],[-1.151,-0.471],[-0.894,-0.303],[-0.587,-0.127],[-0.319,0.012],[0.025,0.179],[0.356,0.329],[0.595,0.433],[0.889,0.553],[1.14,0.641],[1.078,0.593],[0.967,0.535],[0.768,0.434],[0.521,0.307],[0.244,0.16],[0.017,0.035],[-0.253,-0.127],[-0.489,-0.284],[-0.67,-0.43],[-0.766,-0.533],[-0.814,-0.638],[-0.764,-0.724],[-0.519,-0.755],[-0.173,-0.701],[0.122,-0.618],[0.432,-0.5],[0.675,-0.385],[0.953,-0.219],[1.182,-0.037],[1.387,0.229],[1.42,0.52],[1.146,0.813],[0.838,0.928],[0.59,0.973],[0.25,0.99],[-0.101,0.963],[-0.439,0.891],[-0.684,0.803],[-0.943,0.657],[-1.131,0.479],[-1.238,0.274],[-1.26,0.096],[-1.21,-0.134],[-1.079,-0.365],[-0.878,-0.586],[-0.678,-0.75],[-0.397,-0.931],[-0.102,-1.078],[0.128,-1.165],[0.388,-1.235],[0.697,-1.244],[0.799,-1.186],[0.823,-1.105],[0.778,-0.965],[0.654,-0.787],[0.461,-0.577],[0.266,-0.393],[-0.011,-0.151],[-0.305,0.096],[-0.537,0.29],[-0.803,0.52],[-1.023,0.726],[-1.178,0.9],[-1.246,1.011],[-1.254,1.112],[-1.174,1.165],[-0.968,1.164],[-0.717,1.111],[-0.411,1.012],[-0.071,0.873],[0.28,0.7],[0.553,0.543],[0.863,0.33],[1.121,0.107],[1.277,-0.071],[1.424,-0.368],[1.333,-0.716],[0.982,-0.912],[0.766,-0.957],[0.467,-0.973],[0.157,-0.946],[-0.141,-0.879],[-0.355,-0.799],[-0.647,-0.611],[-0.815,-0.273],[-0.713,0.016],[-0.426,0.282],[-0.178,0.422],[0.098,0.534],[0.325,0.599],[0.596,0.649],[0.831,0.661],[1.012,0.634],[1.106,0.587],[1.151,0.499],[1.11,0.382],[0.984,0.243],[0.827,0.12],[0.571,-0.039],[0.264,-0.198],[-0.004,-0.32],[-0.348,-0.458],[-0.679,-0.573],[-0.974,-0.659],[-1.17,-0.704],[-1.35,-0.728],[-1.448,-0.713],[-1.447,-0.644],[-1.319,-0.525],[-1.029,-0.331],[-0.751,-0.166],[-0.501,-0.023],[-0.175,0.161],[0.145,0.343],[0.436,0.515],[0.633,0.639],[0.822,0.77],[0.934,0.868],[0.963,0.929],[0.926,0.947],[0.809,0.931],[0.624,0.871],[0.335,0.743]],"metrics":{"ate_rmse_m":0.027476315898519014,"ate_mean_m":0.0067059710443124875,"ate_max_m":0.4444757786921832,"rpe_rmse_m":0.03597056060750769,"yaw_err_mean_rad":0.0023630398935284513,"final_drift_m":0.0015903299606313927,"path_length_m":59.640725948919325,"n_samples":1037}};
+  var SVGNS='http://www.w3.org/2000/svg';
+  function E(tag,attrs){var e=document.createElementNS(SVGNS,tag);if(attrs){for(var k in attrs){e.setAttribute(k,attrs[k]);}}return e;}
+  function T(svg,x,y,s,anchor,size){var t=E('text',{x:x,y:y,class:'lbl','text-anchor':anchor||'start'});if(size){t.setAttribute('font-size',size);}t.textContent=s;svg.appendChild(t);return t;}
+  function L(svg,pts,color,w){var p=E('polyline',{points:pts,fill:'none',stroke:color,'stroke-width':w||1.4,'stroke-linejoin':'round','stroke-linecap':'round'});svg.appendChild(p);return p;}
+  function chip(host,label,value){var s=document.createElement('span');s.className='chip';s.textContent=label+' ';var b=document.createElement('b');b.textContent=value;s.appendChild(b);host.appendChild(s);}
+  function fmt(v,n){if(v===null||v===undefined||isNaN(v)){return '—';}return Number(v).toFixed(n===undefined?2:n);}
+  function sci(v,n){if(v===null||v===undefined||isNaN(v)){return '—';}return Number(v).toExponential(n===undefined?2:n);}
+
+  document.querySelectorAll('#'+ROOT+' .tab').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var name=btn.getAttribute('data-p');
+      document.querySelectorAll('#'+ROOT+' .tab').forEach(function(b){b.setAttribute('aria-selected',b===btn?'true':'false');});
+      ['train','eff','slam','abl'].forEach(function(p){var el=q('p-'+p);if(el){el.className='panel'+(p===name?' on':'');}});
+    });
+  });
+
+  /* ---------- 训练面板 ---------- */
+  (function(){
+    var svg=q('loss'),W=900,H=260,ml=54,mr=16,mt=14,mb=28;
+    var xs=TRAIN.step,series=[['total','#4ea1ff'],['recon','#3ddc97'],['kl','#ffd166']];
+    var ymax=0;series.forEach(function(s){TRAIN[s[0]].forEach(function(v){if(v>ymax){ymax=v;}});});
+    ymax=Math.ceil(ymax*10)/10+0.05;
+    var x0=xs[0],x1=xs[xs.length-1];
+    function px(i){return ml+(W-ml-mr)*(xs[i]-x0)/(x1-x0);}
+    function py(v){return H-mb-(H-mt-mb)*(v/ymax);}
+    for(var g=0;g<=4;g++){var v=ymax*g/4,y=py(v);svg.appendChild(E('line',{x1:ml,y1:y,x2:W-mr,y2:y,class:'gl'}));T(svg,ml-6,y+3,fmt(v,2),'end');}
+    for(var t=0;t<=5;t++){var idx=Math.round((xs.length-1)*t/5);T(svg,px(idx),H-mb+16,String(xs[idx]),'middle');}
+    svg.appendChild(E('line',{x1:ml,y1:H-mb,x2:W-mr,y2:H-mb,class:'ax'}));
+    svg.appendChild(E('line',{x1:ml,y1:mt,x2:ml,y2:H-mb,class:'ax'}));
+    series.forEach(function(s){
+      var pts=[];for(var i=0;i<xs.length;i++){pts.push(px(i).toFixed(1)+','+py(TRAIN[s[0]][i]).toFixed(1));}
+      L(svg,pts,s[1],1.6);
+    });
+    var guide=E('line',{x1:0,y1:mt,x2:0,y2:H-mb,stroke:'#5b6b86','stroke-width':1,'stroke-dasharray':'3 3',opacity:0});
+    svg.appendChild(guide);
+    var tip=T(svg,ml+8,mt+12,'','start','11');
+    tip.setAttribute('fill','#e8eaf0');
+    var hit=E('rect',{x:ml,y:mt,width:W-ml-mr,height:H-mt-mb,fill:'transparent'});
+    svg.appendChild(hit);
+    hit.addEventListener('mousemove',function(ev){
+      var r=svg.getBoundingClientRect();
+      var lx=(ev.clientX-r.left)/r.width*W;
+      var frac=Math.min(1,Math.max(0,(lx-ml)/(W-ml-mr)));
+      var i=Math.round(frac*(xs.length-1));
+      guide.setAttribute('x1',px(i));guide.setAttribute('x2',px(i));guide.setAttribute('opacity',1);
+      tip.textContent='step '+xs[i]+' ｜ total '+fmt(TRAIN.total[i],4)+' ｜ recon '+fmt(TRAIN.recon[i],4)+' ｜ KL '+fmt(TRAIN.kl[i],3);
+      tip.setAttribute('x',Math.min(px(i)+8,W-360));
+    });
+    hit.addEventListener('mouseleave',function(){guide.setAttribute('opacity',0);tip.textContent='';});
+
+    var bs=q('beta'),BW=440,BH=110,pad=26;
+    var bmax=Math.max.apply(null,TRAIN.beta)*1.25;
+    var bp=[];for(var i=0;i<TRAIN.beta.length;i++){
+      var x=pad+(BW-pad*2)*i/(TRAIN.beta.length-1),y=BH-24-(BH-46)*(TRAIN.beta[i]/bmax);
+      bp.push(x.toFixed(1)+','+y.toFixed(1));
+    }
+    L(bs,bp,'#ffd166',1.5);
+    bs.appendChild(E('line',{x1:pad,y1:BH-24,x2:BW-pad,y2:BH-24,class:'ax'}));
+    T(bs,pad,BH-8,'step 0 → '+TRAIN.step[TRAIN.step.length-1],'start');
+    T(bs,BW-pad,26,'β → '+fmt(bmax*0.81,3),'end');
+    T(bs,pad,26,'0','start');
+
+    var gs=q('gate'),GW=440,GH=110;
+    var gb=[['首 30 步',EFF.gate.loss_first_window,'#ff6b6b'],['末 30 步',EFF.gate.loss_last_window,'#3ddc97']];
+    var gmax=EFF.gate.loss_first_window*1.2;
+    gb.forEach(function(item,i){
+      var bw=90,bx=60+i*140,by=GH-30-(GH-60)*(item[1]/gmax);
+      gs.appendChild(E('rect',{x:bx,y:by,width:bw,height:GH-30-by,rx:4,fill:item[2],opacity:0.85}));
+      T(gs,bx+bw/2,by-6,fmt(item[1],4),'middle');
+      T(gs,bx+bw/2,GH-12,item[0],'middle');
+    });
+    gs.appendChild(E('line',{x1:50,y1:GH-30,x2:GW-10,y2:GH-30,class:'ax'}));
+    T(gs,GW-10,20,'门禁 '+EFF.gate.status+'（↓'+fmt(EFF.gate.relative_drop*100,1)+'%）','end','11');
+
+    var hc=q('train-chips');
+    chip(hc,'训练步数',String(EFF.ts.steps));chip(hc,'耗时',fmt(EFF.ts.duration_s,1)+' s');
+    chip(hc,'最优 val/total',fmt(EFF.ts.best_val,4));chip(hc,'可训练参数',String(EFF.ts.params));
+    chip(hc,'seed',String(EFF.ts.seed));chip(hc,'门禁',EFF.gate.status);
+    chip(hc,'β 终值','0.05');chip(hc,'free-bits','0.02/维');
+  })();
+
+  /* ---------- 算力与时间集成面板 ---------- */
+  (function(){
+    var d=EFF.device,svg=q('dev'),W=900,H=150,ml=14,mr=14,barY=44,barH=34;
+    var segs=[['compute (GPU 前向/反向/解码)',d.compute_ratio,'#4ea1ff'],['data wait (CPU workers)',d.data_ratio,'#ff6b6b'],['H2D 拷贝',d.h2d_ratio,'#ffd166']];
+    var x=ml,totalW=W-ml-mr;
+    segs.forEach(function(s){
+      var w=Math.max(2,totalW*s[1]);
+      svg.appendChild(E('rect',{x:x,y:barY,width:w,height:barH,fill:s[2],opacity:0.9,rx:3}));
+      if(s[1]>0.05){T(svg,x+w/2,barY+barH/2+4,fmt(s[1]*100,1)+'%','middle','12');}
+      x+=w;
+    });
+    var lx=ml;
+    segs.forEach(function(s){
+      svg.appendChild(E('rect',{x:lx,y:96,width:10,height:3,fill:s[2],rx:2}));
+      T(svg,lx+15,100,s[0]+' '+fmt(s[1]*100,2)+'%','start','11');
+      lx+=260;
+    });
+    T(svg,ml,22,'每步 '+fmt(d.data_ms+d.h2d_ms+d.compute_ms,2)+' ms ｜ batch '+d.batch_size+' ｜ workers '+d.workers+' ｜ 判定 '+d.verdict,'start','12');
+    var dc=q('dev-chips');
+    chip(dc,'data wait',fmt(d.data_ms,3)+' ms');chip(dc,'H2D',fmt(d.h2d_ms,3)+' ms');
+    chip(dc,'GPU 计算',fmt(d.compute_ms,2)+' ms');chip(dc,'GPU 占比',fmt(d.compute_ratio*100,1)+'%');
+    chip(dc,'统计步数',String(d.n_steps));
+
+    var jrows=[
+      ['无集成(实测)',EFF.eval.jitter_no_ensemble,'#ff6b6b'],
+      ['关闭集成(配置)',EFF.abl.filter(function(r){return r.run==='no_temporal_ensemble';})[0].jitter_ensemble,'#ff9f6b'],
+      ['指数衰减 0.5',EFF.eval.jitter_ensemble,'#ffd166'],
+      ['uniform 等权',EFF.abl.filter(function(r){return r.run==='ensemble_uniform';})[0].jitter_ensemble,'#3ddc97']
+    ];
+    var js=q('jit'),JW=440,JH=190,jm=34;
+    var jmax=Math.max.apply(null,jrows.map(function(r){return r[1];}))*1.15;
+    jrows.forEach(function(r,i){
+      var bw=54,bx=jm+i*((JW-jm-16)/jrows.length)+14,by=JH-40-(JH-70)*(r[1]/jmax);
+      js.appendChild(E('rect',{x:bx,y:by,width:bw,height:JH-40-by,rx:4,fill:r[2],opacity:0.9}));
+      T(js,bx+bw/2,by-5,sci(r[1],2),'middle','10');
+      T(js,bx+bw/2,JH-26,r[0],'middle','10');
+    });
+    js.appendChild(E('line',{x1:jw0(),y1:JH-40,x2:JW-8,y2:JH-40,class:'ax'}));
+    function jw0(){return jm-14;}
+    T(js,JW-8,18,'越低越平滑（二阶差分方差）','end','10');
+
+    var hs=[[1,2.97366],[4,0.711043],[8,0.846827],[16,0.747361],[32,0.776652]];
+    var ls=q('lat'),LW=440,LH=190;
+    var lmax=Math.max.apply(null,hs.map(function(h){return h[1];}))*1.15;
+    hs.forEach(function(h,i){
+      var bw=50,bx=42+i*74,by=LH-40-(LH-70)*(h[1]/lmax);
+      ls.appendChild(E('rect',{x:bx,y:by,width:bw,height:LH-40-by,rx:4,fill:h[0]===8?'#4ea1ff':'#38506e',opacity:0.95}));
+      T(ls,bx+bw/2,by-5,fmt(h[1],2),'middle','10');
+      T(ls,bx+bw/2,LH-26,'H='+h[0],'middle','10');
+    });
+    ls.appendChild(E('line',{x1:30,y1:LH-40,x2:LW-8,y2:LH-40,class:'ax'}));
+    T(ls,LW-8,18,'每执行步摊销 ms（H=8 为 base）','end','10');
+
+    var ec=q('eff-chips');
+    chip(ec,'每次预测 p50',fmt(EFF.eval.latency.p50_ms,2)+' ms');
+    chip(ec,'p95',fmt(EFF.eval.latency.p95_ms,2)+' ms');
+    chip(ec,'每执行步(H=8,n_exec=4)',fmt(EFF.eval.latency.p50_ms/4,2)+' ms');
+    chip(ec,'时间集成降抖动',fmt((1-EFF.eval.jitter_ensemble/EFF.eval.jitter_no_ensemble)*100,1)+'%');
+    chip(ec,'采样多样性',fmt(EFF.eval.diversity,3));
+    chip(ec,'闭环执行步数',String(EFF.closed.executed_steps));
+    chip(ec,'限幅/NaN 事件',EFF.closed.clip_events+' / '+EFF.closed.nan_events);
+    chip(ec,'动作下发',EFF.closed.publish_allowed?'已开启':'关闭（默认安全）');
+  })();
+
+  /* ---------- SLAM 面板 ---------- */
+  (function(){
+    var M=SLAM.metrics,est=SLAM.est,ref=SLAM.ref,svg=q('trajs'),W=460,H=420,pad=34;
+    var all=est.concat(ref),minx=1e9,maxx=-1e9,miny=1e9,maxy=-1e9;
+    all.forEach(function(p){minx=Math.min(minx,p[0]);maxx=Math.max(maxx,p[0]);miny=Math.min(miny,p[1]);maxy=Math.max(maxy,p[1]);});
+    var cx=(minx+maxx)/2,cy=(miny+maxy)/2,span=Math.max(maxx-minx,maxy-miny)*1.15;
+    function X(v){return pad+(W-pad*2)*(0.5+(v-cx)/span);}
+    function Y(v){return H-pad-(H-pad*2)*(0.5+(v-cy)/span);}
+    function pl(series,color,w,dash){
+      var pts=series.map(function(p){return X(p[0]).toFixed(1)+','+Y(p[1]).toFixed(1);}).join(' ');
+      var e=E('polyline',{points:pts,fill:'none',stroke:color,'stroke-width':w,'stroke-linejoin':'round','stroke-linecap':'round'});
+      if(dash){e.setAttribute('stroke-dasharray',dash);}
+      svg.appendChild(e);
+    }
+    pl(ref,'#98a0b3',3.4,'5 4');
+    pl(est,'#ff6b6b',1.5);
+    svg.appendChild(E('line',{x1:pad,y1:H-pad,x2:W-pad,y2:H-pad,class:'ax'}));
+    svg.appendChild(E('line',{x1:pad,y1:pad,x2:pad,y2:H-pad,class:'ax'}));
+    T(svg,W-pad,H-12,'x (m)','end');T(svg,pad-6,pad+10,'y (m)','end');
+    var scaleM=1,scalePx=(W-pad*2)/span*scaleM;
+    svg.appendChild(E('line',{x1:pad+6,y1:H-pad-14,x2:pad+6+scalePx,y2:H-pad-14,stroke:'#e8eaf0','stroke-width':2}));
+    T(svg,pad+10+scalePx,H-pad-10,'1 m','start','10');
+
+    var err=est.map(function(p,i){return Math.hypot(p[0]-ref[i][0],p[1]-ref[i][1]);});
+    var es=q('slamerr'),EW=460,EH=200,em=36;
+    var emax=Math.max.apply(null,err)*1.15;
+    var pts=err.map(function(v,i){return (em+(EW-em-12)*i/(err.length-1)).toFixed(1)+','+(EH-26-(EH-56)*(v/emax)).toFixed(1);}).join(' ');
+    L(es,pts,'#4ea1ff',1.5);
+    var meanLine=EH-26-(EH-56)*(M.ate_mean_m/emax);
+    es.appendChild(E('line',{x1:em,y1:meanLine,x2:EW-12,y2:meanLine,stroke:'#3ddc97','stroke-width':1,'stroke-dasharray':'4 3'}));
+    T(es,EW-14,meanLine-4,'均值 '+fmt(M.ate_mean_m,4)+' m','end','10');
+    es.appendChild(E('line',{x1:em,y1:EH-26,x2:EW-12,y2:EH-26,class:'ax'}));
+    T(es,em,EH-8,'采样序号（约 119 s 回放，1037 个节点）','start','10');
+    T(es,14,EH-26-30,'m','start','10');
+
+    var sc=q('slam-chips');
+    chip(sc,'ATE RMSE',fmt(M.ate_rmse_m,4)+' m');chip(sc,'ATE 最大',fmt(M.ate_max_m,3)+' m');
+    chip(sc,'RPE(1s)',fmt(M.rpe_rmse_m,4)+' m');chip(sc,'航向误差均值',fmt(M.yaw_err_mean_rad,4)+' rad');
+    chip(sc,'最终漂移',fmt(M.final_drift_m,5)+' m');chip(sc,'参考路径',fmt(M.path_length_m,1)+' m');
+    chip(sc,'轨迹节点',String(M.n_samples));
+    var flow=q('slam-flow');
+    chip(flow,'数据链','scans.npz → ROS2 bag → cartographer_offline_node → pbstream → trajectory_query');
+    chip(flow,'证据等级','MOCK 真值 + 真实 Cartographer（离线回放）');
+    chip(flow,'在线节点','BLOCKED（该构建 gflags 重复定义）');
+  })();
+
+  /* ---------- 消融面板 ---------- */
+  (function(){
+    var tb=q('abl'),order=['base','no_cvae','no_slam_input','no_chunk','chunk_len_H4','chunk_len_H16','chunk_len_H32','no_temporal_ensemble','ensemble_uniform'];
+    var rows=order.map(function(name){return EFF.abl.filter(function(r){return r.run===name;})[0];}).filter(Boolean);
+    var head=document.createElement('tr');
+    ['run','recon(L1)','每执行步 ms','抖动 无集成','抖动 有集成','变化'].forEach(function(h){var th=document.createElement('th');th.textContent=h;head.appendChild(th);});
+    tb.appendChild(head);
+    rows.forEach(function(r){
+      var tr=document.createElement('tr');
+      if(r.run==='base'){tr.className='best';}
+      var cells=[r.run,fmt(r.recon,4),fmt(r.latency_per_step_ms,3),sci(r.jitter_no_ensemble,2),sci(r.jitter_ensemble,2)];
+      var delta=(r.jitter_no_ensemble&&r.jitter_ensemble)?((r.jitter_ensemble/r.jitter_no_ensemble-1)*100):null;
+      cells.push(delta===null?'—':(delta>0?'+':'')+fmt(delta,1)+'%');
+      cells.forEach(function(c){var td=document.createElement('td');td.textContent=c;tr.appendChild(td);});
+      tb.appendChild(tr);
+    });
+    var ac=q('abl-chips');
+    chip(ac,'A1 去掉 CVAE','recon 0.2305 vs base 0.2351（打平）');
+    chip(ac,'A2/A5 分块','H≥4 后摊销 ~0.74 ms/步（H=1 为 3.06）');
+    chip(ac,'A3 时间集成','−4.7%（decay=0.5）/ −13.2%（uniform）');
+    chip(ac,'A4 去掉 SLAM 输入','recon 0.2354 vs 0.2351；扰动诊断 +3.6%~+7.2% 证明模型确实在用');
+    chip(ac,'口径','recon 在不同 H 之间不可直接比较；本实验未量化集成滞后代价');
+  })();
+})();
+</script>
+</div>

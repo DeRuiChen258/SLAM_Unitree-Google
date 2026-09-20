@@ -1,0 +1,9 @@
+# configs/ablation/no_chunk.yaml —— A2：去掉动作分块（H=1，逐步预测）
+# 回答的问题：H=1 时平滑性与推理频率如何变化？（推理频率上升、抖动通常变大）
+data:
+  chunk:
+    H: 1
+    stride: 1
+infer:
+  chunk_exec:
+    n_exec: 1               # n_exec 必须 ≤ H

@@ -1,0 +1,110 @@
+# configs/data.yaml
+# 作用：数据与切片契约（唯一事实源）。字段顺序即张量顺序，必须与
+#       data/schema/dataset_schema.json 完全一致。
+# 单位约定：长度 m，角度 rad，时间 s，动作以当前末端位姿为参考的增量。
+# 坐标系约定：右手系；`base` = 机器人基坐标系；SLAM 位姿在 map 系，角度用 sin/cos 编码。
+schema_version: "1.0.0"
+
+image:
+  height: 64
+  width: 64
+  channels: 3
+  color_space: RGB
+  resize: [64, 64]
+  crop: null
+  normalize:
+    mean: [0.5, 0.5, 0.5]
+    std: [0.25, 0.25, 0.25]
+  # 预处理实现位置（三方共用，禁止旁路重写）
+  transform_impl: src/datasets/transforms.py
+
+observation:
+  num_frames: 2        # K：历史帧数
+  frame_stride: 1      # 相邻历史帧间隔（帧）
+  num_cameras: 1       # N_cam；>1 时张量为 [B, N_cam, K, C, H, W]
+  multi_camera_mode: concat
+
+state:
+  # 顺序即张量顺序；requires 表示该块存在的前提开关
+  blocks:
+    - {name: joint_pos, dim: 7}
+    - {name: joint_vel, dim: 7}
+    - {name: gripper, dim: 1}
+    - {name: ee_pose, dim: 7}
+    - {name: slam_pose, dim: 4, requires: slam_input}
+    - {name: slam_valid, dim: 1, requires: slam_input}
+    - {name: time_feat, dim: 2}
+  normalize_blocks: [joint_pos, joint_vel, gripper, ee_pose, slam_pose]
+  passthrough_blocks: [slam_valid, time_feat]
+
+slam_input:
+  enabled: true                 # A4 消融（no_slam_input）把此项置 false
+  origin: episode_start         # 以 episode 起点为原点
+  fields: [dx, dy, sin_yaw, cos_yaw]
+  encode_angle: sincos
+  # 归一化统计来源：data/stats/normalization.json 的 slam_pose 通道
+  normalize: true
+
+action:
+  dim: 7
+  layout: [dx, dy, dz, rx, ry, rz, gripper]   # 平移增量(m) + 旋转增量(rad, 轴角) + 夹爪
+  frame: base
+  is_delta: true
+  gripper_range: [-1.0, 1.0]
+  # 限幅取自 mock 数据的真实统计（见 logs/12_data_check.json 的 action 分位数），
+  # 不是凭经验拍的：mock 单步最大平移 0.066 m、最大旋转 0.11 rad。
+  delta_translation_limit: 0.06   # m/step（限幅用，同时用于越界过滤）
+  delta_rotation_limit: 0.12      # rad/step
+
+chunk:
+  H: 8                 # 动作块长度（A5 消融扫描 4/8/16/32）
+  stride: 2            # 相邻窗口间隔
+  pad_mode: mask       # mask：末尾不足 H 用 mask=0 表示无效步
+
+control:
+  hz: 10.0             # 控制频率
+  dt: 0.1              # 1/hz，冗余存放以便下游免算
+
+splits:
+  train: 0.7
+  val: 0.15
+  test: 0.15
+  seed: 0
+
+filters:
+  max_gap_s: 0.35          # 时间戳跳变阈值
+  min_motion: 1.0e-4       # 静止段判定（动作全量 L2 下限）
+  action_bound_sigma: 3.0  # 动作越界判定（以名义步长上限为单位，见 schema.py 的换算）
+  max_slam_gap_s: 0.35     # SLAM 位姿丢帧容差
+  reject_invalid_slam: false  # true=丢弃无效位姿样本；false=保留但 slam_valid=0
+  black_frame_std: 0.01    # 图像全黑/过曝检测（像素 std 下限）
+  max_reject_ratio: 0.35   # 过滤比例超过即报错（防止把数据洗没）
+
+stats:
+  clip_sigma: 4.0          # 统计与归一化时的截断
+  min_std: 1.0e-6          # 防止除零
+
+mock:
+  seed: 1234
+  num_episodes: 60
+  episode_len: 120
+  multimodal_prob: 0.5      # 同一观测存在 ≥2 种合理动作的概率
+  # 动作噪声依据：实测首版 0.004 时噪声标准差≈信号标准差（0.0043 m/step）的 94%，
+  # 任务退化为"预测噪声"，recon 卡在 0.28 下不去（见 docs/experiments.md 的失败记录）。
+  # 调到 0.0008 后噪声约为典型步长的 5%~15%，仍保留鲁棒性验证价值。
+  # 0.0003 m/step = 3mm/步 = 3cm/s 的执行抖动：保留"有噪演示"的鲁棒性验证价值，
+  # 同时不让噪声方差主导不可学习项（实测各通道 noise/signal 见 logs/12_data_check.json）。
+  action_noise_std: 0.0003
+  observation_delay_frames: 1   # 观测延迟（帧）
+  drop_frame_prob: 0.0
+  slam_drift_std: 0.003
+  slam_dropout_prob: 0.02
+  world:
+    size: [6.0, 6.0]
+    num_obstacles: 8
+    resolution: 0.05
+  laser:
+    beams: 180              # 每帧激光束数
+    range_min: 0.15
+    range_max: 8.0
+    noise_std: 0.01

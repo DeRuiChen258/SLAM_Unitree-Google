@@ -1,0 +1,81 @@
+# configs/slam.yaml
+# 作用：Cartographer ↔ 策略的桥接契约唯一事实源。
+# 约束：topic / frame 名已按【本机实测 + 官方示例配置】核对，核对记录见
+#       docs/cartographer_integration.md 与 logs/00_env_check.txt（含核对日期与命令）。
+#       核对日期：2026-09-20；核对命令：ros2 topic list / ros2 topic info（详见文档）。
+mode: replay               # online | replay | mock | dry_run
+degradation_level: auto    # auto | a_source_build | b_container | c_bag_replay | d_mock
+
+source:
+  kind: tf                 # tf | tracked_pose_topic
+  pose_topic: /cartographer/tracked_pose    # 仅在 kind=tracked_pose_topic 时使用
+  pose_topic_type: geometry_msgs/msg/PoseStamped
+
+frames:
+  map_frame: map           # Cartographer map_builder.lua 中的 map_frame
+  tracking_frame: base_link
+  odom_frame: odom
+  published_frame: base_link
+  sensor_frame: laser
+  provide_odom_frame: true
+
+tf:
+  lookup_timeout_s: 0.2
+  max_transform_age_s: 0.5
+  require_map_to_base_link: true
+
+pose_stream:
+  transport: jsonl         # jsonl | udp
+  jsonl_path: ${project_root}/data/slam/pose_stream.jsonl
+  udp_host: 127.0.0.1
+  udp_port: 45001
+  flush_every: 1
+
+sync:
+  # 位姿查询使用哪个时钟：
+  #   capture = 采集/仿真时钟（离线回放必须用这个，否则会用墙钟去查历史位姿 → 全部超容差）
+  #   mono    = 单调时钟（在线运行时用，配合 watchdog）
+  query_clock: capture
+  max_align_tolerance_s: 0.10   # 位姿与策略时钟最大容差
+  max_extrapolation_s: 0.05
+  report_path: ${project_root}/logs/slam_align.json
+
+health:
+  min_rate_hz: 5.0
+  max_drop_ratio: 0.10          # 丢帧率阈值，超过触发降级
+  jump_translation_threshold: 0.30   # 相邻位姿跳变阈值(m)
+  jump_rotation_threshold: 0.50      # 相邻位姿跳变阈值(rad)
+  buffer_size: 512
+
+fallback:
+  odom_source: unitree_odom     # Cartographer 不可用时的里程计来源
+  mark_source: odom_fallback    # 位姿样本 source 字段取值
+  unavailable_marker: unavailable
+  never_publish_zero_pose: true # 硬规则：禁止用 0 位姿冒充有效数据
+
+state_input:
+  use_slam_input: true          # A4 消融置 false
+  origin: episode_start
+  velocity_from_diff: true
+  invalid_policy: keep_last     # keep_last | mark_invalid
+
+replay:
+  scan_file: ${project_root}/data/slam/scans.npz
+  scan_topic: /scan
+  scan_topic_type: sensor_msgs/msg/LaserScan
+  clock_topic: /clock
+  publish_rate_hz: 10.0
+  use_sim_time: true
+  start_delay_s: 2.0
+
+cartographer:
+  config_basename: g1_2d.lua
+  configuration_directory: ${project_root}/configs/cartographer
+  pbstream_path: ${project_root}/outputs/slam/trajectory.pbstream
+  map_output_prefix: ${project_root}/outputs/slam/cartographer_map
+  trajectory_topic: /trajectory_node_list
+  submap_topic: /submap_list
+
+metrics:
+  reference: ground_truth       # ground_truth | odometry | mock（必须显式声明）
+  output_dir: ${project_root}/outputs/slam
